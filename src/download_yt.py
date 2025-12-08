@@ -4,7 +4,7 @@ import re
 
 root_dir = Path(__file__).parent.parent.resolve()
 
-def batch_download(urls, PATH, FAILED_LOG, check_subs=False, automatic_subs=False):
+def batch_download(urls, PATH, FAILED_LOG, check_subs=False):
     def has_spanish_subs(url):
         ydl_opts = {
             "skip_download": True
@@ -14,11 +14,9 @@ def batch_download(urls, PATH, FAILED_LOG, check_subs=False, automatic_subs=Fals
             info = ydl.extract_info(url, download=False)
 
         subs = info.get("subtitles", {})
-        auto_subs = info.get("automatic_captions", {})
-        has_es = lambda x: any(re.match(r'^es', lang) for lang in x.keys())
-        return has_es(subs) if check_subs else has_es(auto_subs)
+        return any(re.match(r'^es', lang) for lang in subs.keys())
 
-    def download_video(url):
+    def download_video(url, index):
         ydl_opts = {
             "format": (
                 "bestvideo[height<=240][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/"
@@ -26,17 +24,17 @@ def batch_download(urls, PATH, FAILED_LOG, check_subs=False, automatic_subs=Fals
                 "best[height<=240][ext=mp4]/"
                 "best[ext=mp4]"
             ),
-            "outtmpl": str(PATH) + "/%(title)s.%(ext)s",
+            "outtmpl": str(PATH) + f"%(autonumber)s.%(ext)s",
             "retries": 10,
             "fragment_retries": 10,
             "file_access_retries": 10,
             "socket_timeout": 30,
             "ignoreerrors": False,  # Necesario para detectar bien excepciones,
-            "writesubtitles": check_subs or automatic_subs,
-            "writeautomaticsubs": automatic_subs,
+            "writesubtitles": check_subs,
             "subtitleslangs": ["es.*"],
             "allsubtitles": False,
             "subtitlesformat": "vtt",
+            "remotecomponents": "ejs:github"
         }
 
         try:
@@ -56,13 +54,13 @@ def batch_download(urls, PATH, FAILED_LOG, check_subs=False, automatic_subs=Fals
 
     with open(PATH / "archive.txt", "a+") as f:
         downloaded = f.read().split("\n")
-        for url in urls:
+        for idx, url in enumerate(urls):
             if not url in downloaded:
-                if check_subs or automatic_subs:
+                if check_subs:
                     if has_spanish_subs(url):
-                        download_video(url)
+                        download_video(url, idx)
                 else:
-                    download_video(url)
+                    download_video(url, idx)
                 downloaded.append(url)
                 #f.write(url + "\n")
 
@@ -81,12 +79,11 @@ if __name__ == "__main__":
     #with open(root_dir / "data" / "info" / "videolibros_private.txt", "r") as f:
     #    urls = f.read().split("\n")
 
-    urls = fetch_urls_from_channel("https://www.youtube.com/@locufre/videos")
+    urls = fetch_urls_from_channel("https://www.youtube.com/@CNSORDOSARGENTINA/videos")
 
     batch_download(
-        urls,
-        root_dir / "data" / "raw" / "locufre",
+        ["https://www.youtube.com/@CNSORDOSARGENTINA/videos"],
+        root_dir / "data" / "raw" / "3-CNSordos",
         root_dir / "failed_downloads.txt",
         check_subs=False,
-        automatic_subs=True
     )
