@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 root_dir = Path(__file__).parent.parent.resolve()
-PATH = root_dir / "data" / "raw" / "4-Locufre"
+PATH = root_dir / "data" / "raw" / "3-CNSordos"
 
 # Start by renaming all the subtitles to get rid of .es-x.vtt
 subtitles = [f for f in os.listdir(PATH) if f.endswith(".vtt")]
