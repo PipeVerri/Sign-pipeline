@@ -1,2 +1,2 @@
-whisperx
 yt-dlp
+stable-ts

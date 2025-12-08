@@ -8,7 +8,7 @@ root_dir = Path(__file__).parent.parent.resolve()
 videos_ids = set()
 
 def save_videos():
-    with open(root_dir / "data" / "raw" / "videos_ids.txt", "w") as f:
+    with open(root_dir / "data" / "info" / "videolibros_private.txt", "w") as f:
         for id in videos_ids:
             f.write(f"https://www.youtube.com/watch?v={id}" + "\n")
 
@@ -25,4 +25,5 @@ for i in range(106, 0, -1):
             videos_ids.add(video_id)
             print(f"Got video {i} with src {video_id}")
 
+    save_videos()
     time.sleep(1)
