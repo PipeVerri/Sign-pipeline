@@ -89,6 +89,7 @@ def rendering_thread():
                 # Add red tint to indicate jumped frames
                 frame = cv2.addWeighted(frame, 0.7, np.full_like(frame, (0, 0, 255)), 0.3, 0)
 
+            #frame = np.zeros(frame.shape, dtype=np.uint8)
             img = draw_landmarks_from_array(frame, pose, connections=mp.solutions.pose.POSE_CONNECTIONS)
             img = draw_landmarks_from_array(img, left, connections=mp.solutions.hands.HAND_CONNECTIONS)
             img = draw_landmarks_from_array(img, right, connections=mp.solutions.hands.HAND_CONNECTIONS)
