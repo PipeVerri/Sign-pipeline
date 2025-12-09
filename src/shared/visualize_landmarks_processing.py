@@ -22,18 +22,12 @@ def processing_thread():
     """Thread 1: Read frames and add landmarks to lm"""
     global lm_generator
 
-    cap = cv2.VideoCapture("../../data/raw/test/1.mp4")
-    # Start at minute 2 (120 seconds)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    start_frame = int(120 * fps)  # 2 minutes * 60 seconds * fps
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
     with mp.solutions.holistic.Holistic(model_complexity=2, static_image_mode=False) as holistic:
         # Initialize generator in this thread
         with generator_lock:
             lm_generator = lm.get_landmarks(continuous=True)
 
-        for frame in frame_reader(cap, fps=6):
+        for frame in camera_reader(fps=6):
             if stop_event.is_set():
                 print("Stopping processing thread...")
                 break
