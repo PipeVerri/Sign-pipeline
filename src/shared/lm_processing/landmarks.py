@@ -220,7 +220,7 @@ class Landmarks:
                 if self.pose[current_frame - 1] is None and pose_interpolated is None:
                     jumped = True
 
-            yield pose_frame, left_frame, right_frame, jumped
+            yield pose_frame, left_frame, right_frame, (current_frame if jumped else None)
             current_frame += 1
 
     def _rodrigues(self, vec1, vec2):
