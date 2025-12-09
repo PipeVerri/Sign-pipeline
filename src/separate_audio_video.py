@@ -24,8 +24,7 @@ def extract_video(video_path, video_output_path):
         str(video_output_path)
     ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
-folder = "CNSordos"
-PATH = root_dir / "data" / "raw" / folder
+PATH = root_dir / "data" / "raw" / "3-CNSordos" / "unlabeled"
 
 files = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
 
