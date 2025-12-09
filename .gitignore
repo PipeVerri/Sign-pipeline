@@ -209,3 +209,6 @@ __marimo__/
 .idea/
 data/
 failed_downloads.txt
+
+# Heavy models
+models/
