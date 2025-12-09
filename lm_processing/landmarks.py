@@ -149,6 +149,28 @@ class Landmarks:
                 # Current frame is None - check if we can/should interpolate
                 start, end = self.empty_pose.get_interval(current_frame)
 
+                # Special case: if we're at the beginning (start == 0) and current frame is None,
+                # we should skip to the first valid frame
+                if start == 0 and current_frame == 0:
+                    # Find first valid frame
+                    first_valid_frame = None
+                    for i in range(len(self.pose)):
+                        if self.pose[i] is not None:
+                            first_valid_frame = i
+                            break
+
+                    if first_valid_frame is not None:
+                        current_frame = first_valid_frame
+                        jumped = True
+                        continue
+                    else:
+                        # No valid frames at all
+                        if continuous:
+                            time.sleep(0.001)
+                            continue
+                        else:
+                            break
+
                 # To interpolate, we need:
                 # 1. A complete interval (end != current_frame)
                 # 2. The frame after the interval to exist (end + 1 < len)
@@ -220,7 +242,7 @@ class Landmarks:
                 if self.pose[current_frame - 1] is None and pose_interpolated is None:
                     jumped = True
 
-            yield pose_frame, left_frame, right_frame, (current_frame if jumped else None)
+            yield pose_frame, left_frame, right_frame, jumped
             current_frame += 1
 
     def _rodrigues(self, vec1, vec2):
