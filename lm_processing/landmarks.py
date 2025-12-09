@@ -1,8 +1,8 @@
 import time
 
-from src.utils.mediapipe.parse import mp_to_arr
+from utils.mediapipe.parse import mp_to_arr
 import numpy as np
-from src.utils.ds.segment_tree import SegmentTree
+from utils.ds.segment_tree import SegmentTree
 from dataclasses import dataclass, field
 from typing import List, Dict
 from pathlib import Path
@@ -119,60 +119,108 @@ class Landmarks:
             - pose_frame: The interpolated or processed pose frame data for the current frame.
             - left_frame: Processed left-hand landmarks for the current frame.
             - right_frame: Processed right-hand landmarks for the current frame.
+            - jumped: A boolean indicating whether the generator jumped to a new frame due to missing data.
         """
-        # Un generador que va retornando los landmarks a procesar
         current_frame = 0
         pose_interpolated = None
+        jumped = False  # Track if we just jumped over a gap
 
         while True:
-            # Empezar interpolando los datos y sacando los rangos missing demasiado grandes
-            # Empezar con el pose asi tengo algo de lo cual puedo agarrar las manos
-            if current_frame == len(self.pose):
+            # Check if we've reached the end of available frames
+            if current_frame >= len(self.pose):
                 if continuous:
                     time.sleep(0.001)
                     continue
                 else:
                     break
 
-            if pose_interpolated is not None: # Fijarme si estoy interpolando
+            # If currently interpolating, get next interpolated frame
+            if pose_interpolated is not None:
                 pose_frame = next(pose_interpolated)
                 if pose_frame is None:
                     pose_interpolated = None
+                    current_frame += 1
+                    continue
 
-            # Fijarme si puedo retornar la pose asi nomas
-            if (self.pose[current_frame] is not None) and (pose_interpolated is None):
+            # If current frame has data, use it directly
+            if self.pose[current_frame] is not None:
                 pose_frame = self.pose[current_frame]
             else:
-                # Fijarme si tengo limite por derecha para interpolar
+                # Current frame is None - check if we can/should interpolate
                 start, end = self.empty_pose.get_interval(current_frame)
-                if end != current_frame and (end + 1) < len(self.pose): # Si hay limite y puedo interpolar
+
+                # To interpolate, we need:
+                # 1. A complete interval (end != current_frame)
+                # 2. The frame after the interval to exist (end + 1 < len)
+                # 3. The frame after the interval to have data
+                can_interpolate = (end != current_frame and
+                                   (end + 1) < len(self.pose) and
+                                   self.pose[end + 1] is not None)
+
+                if can_interpolate:
                     interpol_length = end - start + 1
-                    # Fijarme si tomarlo como 2 secuencias diferentes o no
+
                     if interpol_length > self.max_frames_interpolation:
-                        current_frame = end + 1 # Saltar a la siguiente secuencia
-                        pose_frame = self.pose[current_frame]
+                        # Gap too large - skip to next valid sequence
+                        current_frame = end + 1
+                        jumped = True  # Mark that we're jumping
+                        continue
                     else:
+                        # Start interpolation
                         pose_interpolated = self._interpolate(start, end, self.pose)
                         pose_frame = next(pose_interpolated)
-                else: # Si no puedo interpolar, esperar a re-capturar la pose o que haya pasado demasiado tiempo
-                    if current_frame - start >= self.max_frames_interpolation:
+                else:
+                    # Cannot interpolate yet - need to wait or skip
+                    waiting_time = current_frame - start
+
+                    if waiting_time >= self.max_frames_interpolation:
+                        # Been waiting too long
                         if continuous:
-                            current_frame = len(self.pose)
-                            continue
+                            # Try to skip ahead if there's valid data beyond the gap
+                            # Find the next frame with data
+                            next_valid_frame = None
+                            for i in range(current_frame + 1, len(self.pose)):
+                                if self.pose[i] is not None:
+                                    next_valid_frame = i
+                                    break
+
+                            if next_valid_frame is not None:
+                                # Skip to the next valid frame
+                                current_frame = next_valid_frame
+                                jumped = True  # Mark that we're jumping
+                                continue
+                            else:
+                                # No valid frame found, wait at the end
+                                current_frame = len(self.pose)
+                                continue
                         else:
                             break
                     else:
-                        continue
+                        # Still within acceptable wait time - WAIT FOR MORE FRAMES
+                        if continuous:
+                            # CRITICAL FIX: Must sleep here!
+                            time.sleep(0.001)
+                            continue
+                        else:
+                            # In non-continuous mode, we can't wait, so break
+                            break
 
-            # Setearlo para saber el pose_frame generado en el i frame. No hay problema porque no lo cuenta dentro del SegmentTree
+            # We have a valid pose_frame - update the array
             self.pose[current_frame] = pose_frame
 
-            # Ahora procesar las manos
+            # Process hands
             left_frame = self._process_hand(self.left, current_frame, pose_frame, 13, 15, compute_accel=compute_accel)
             right_frame = self._process_hand(self.right, current_frame, pose_frame, 14, 16, compute_accel=compute_accel)
 
-            # Visualizarlas
-            yield pose_frame, left_frame, right_frame
+            # Yield results (pose, left_hand, right_hand, jumped)
+            # Check if we jumped (skipped frames without interpolating)
+            jumped = False
+            if current_frame > 0:
+                # If the previous frame was None and we didn't interpolate, we jumped
+                if self.pose[current_frame - 1] is None and pose_interpolated is None:
+                    jumped = True
+
+            yield pose_frame, left_frame, right_frame, jumped
             current_frame += 1
 
     def _rodrigues(self, vec1, vec2):
