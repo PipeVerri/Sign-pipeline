@@ -18,5 +18,3 @@ with mp.solutions.holistic.Holistic(model_complexity=2, static_image_mode=False)
         img = draw_landmarks_from_array(img, right, connections=mp.solutions.hands.HAND_CONNECTIONS)
         cv2.imshow("frame", img)
         cv2.waitKey(1)
-
-
