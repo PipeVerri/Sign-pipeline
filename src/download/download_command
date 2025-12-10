@@ -1,2 +1,0 @@
-yt-dlp -f "bestvideo[height<=240][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/" --write-subs --sub-langs "es.*"  https://www.youtube.com/@CNSORDOSARGENTINA -o "%(video_autonumber)s.%(ext)s" --remote-components ejs:github
-

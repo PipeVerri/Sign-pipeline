@@ -1,3 +1,5 @@
+# WIP
+
 mkdir -p data/raw/0-AsociacionCivil
 mkdir -p data/raw/1-videolibros_private
 mkdir -p data/raw/2-videolibros_public
