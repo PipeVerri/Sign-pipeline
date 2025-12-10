@@ -13,6 +13,3 @@ Otros canales que podria usar serian:
 Bugs:
 - Hay veces que alguien se va de frame y el visualize_landmarks_processing se frena
 - La escala de las manos anda para el culo, creo que es porque la posicion z de los pose landmarks anda mal
-
-Tengo 2 formas de manejar varias personas en un frame:
-- Yolo V8 para detectar y recortar

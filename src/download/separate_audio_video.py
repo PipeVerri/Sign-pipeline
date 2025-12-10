@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 from multiprocessing import Pool
 
-root_dir = Path(__file__).parent.parent.resolve()
+root_dir = Path(__file__).parent.parent.parent.resolve()
 
 def extract_audio(video_path, audio_path):
     if audio_path.exists():
@@ -24,7 +24,7 @@ def extract_video(video_path, video_output_path):
         str(video_output_path)
     ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
-PATH = root_dir / "data" / "raw" / "3-CNSordos" / "unlabeled"
+PATH = root_dir / "data" / "raw" / "4-Locufre"
 
 files = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
 
