@@ -1,6 +1,4 @@
 import os
-
-from torch.backends.mkl import verbose
 from ultralytics import YOLO
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
@@ -10,6 +8,8 @@ import json
 
 root_dir = Path(__file__).parent.parent.parent.resolve()
 MAX_WORKERS = 24
+CLIP_PADDING = 1
+CLIP_OVERLAP_GAP = 0.3
 
 def read_cap_segments(cap, start, end, fps=6):
     fps_original = cap.get(cv2.CAP_PROP_FPS)
@@ -38,24 +38,37 @@ def process_folder(PATH):
     def process_video(f):
         # Create a YOLO model
         model = YOLO(root_dir / "models" / "yolo" / "yolo11m.pt")
+
         # Get the video length
         cap = cv2.VideoCapture(PATH / "video" / f)
         fps = cap.get(cv2.CAP_PROP_FPS)
         fps_length = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         length = fps_length / fps
-        # Now process each caption clip
-        video_output = []
-        captions = webvtt.read(PATH / "subs" / f.replace(".mp4", ".vtt"))
-        for idx, caption in enumerate(captions):
-            print(f"Processing clip {idx} of {len(captions)}")
+
+        # Combine each subtitle segment into clips
+        clips_timestamps = []
+        for caption in webvtt.read(PATH / "subs" / f.replace(".mp4", ".vtt")):
             # Convert to seconds
-            parse_str = lambda arr: [int(float(x)) for x in arr.split(":")]
+            parse_str = lambda arr: [float(x) for x in arr.split(":")]
             convert_seconds = lambda arr: arr[0] * (60 * 60) + arr[1] * 60 + arr[2]
             start_seconds = convert_seconds(parse_str(caption.start))
             end_seconds = convert_seconds(parse_str(caption.end))
-            # Now add padding and check the bounds
-            start_seconds = max(start_seconds - 1.5, 0)
-            end_seconds = min(end_seconds + 1.5, length)
+            # Check if the clip can be combined(no padding yet to avoid mixing stuff that shouldn't be mixed)
+            if len(clips_timestamps) == 0 or clips_timestamps[-1][1] < start_seconds:
+                clips_timestamps.append([start_seconds, end_seconds])
+            else:
+                clips_timestamps[-1][1] = max(end_seconds)
+
+        # Now process each caption clip
+        video_output = []
+        for idx, clip in enumerate(clips_timestamps):
+            print(f"Processing clip {idx} of {len(clips_timestamps)}")
+            # Check where the next clip is so it doesnt overlap
+            clip_end_overlap = clips_timestamps[idx+1][0] if idx+1 < len(clips_timestamps) else length - CLIP_OVERLAP_GAP
+            clip_start_overlap = clips_timestamps[idx-1][1] if idx-1 >= 0 else -CLIP_OVERLAP_GAP
+            # Add padding
+            start_seconds = max(clip_start_overlap + CLIP_OVERLAP_GAP, int(clip[0] - CLIP_PADDING))
+            end_seconds = min(clip_end_overlap - CLIP_OVERLAP_GAP, int(clip[1] + CLIP_PADDING))
             # Now process the cap using those bounds
             clip_output = []
             for frame, timestamp in read_cap_segments(cap, start_seconds, end_seconds):
@@ -71,10 +84,15 @@ def process_folder(PATH):
 
                     clip_output.append({
                         "timestamp": timestamp,
-                        "people": boxes_dict
+                        "boxes": boxes_dict
                     })
 
-            video_output.append(clip_output)
+            video_output.append({
+                "start": start_seconds,
+                "end": end_seconds,
+                "boxes": clip_output
+            })
+
         json.dump(video_output, open(OUTPUT_PATH / f"{f.replace('.mp4', '.json')}", "w"))
         cap.release()
 
