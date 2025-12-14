@@ -9,6 +9,25 @@ from pathlib import Path
 
 np.seterr(divide='raise', invalid='raise')
 
+
+def make_hip_centric(pose):
+    """
+    Transforms pose data to be centered around the hip midpoint.
+
+    Parameters:
+    pose: np.ndarray
+        A NumPy array representing the coordinates of body keypoints.
+        Expected to have hip keypoints at indices 23 and 24.
+
+    Returns:
+    np.ndarray
+        The pose array with all points translated so the hip center is at the origin.
+    """
+    hip_distance_v = pose[24] - pose[23]
+    hip_center = pose[24] - (hip_distance_v / 2)
+    return pose - hip_center
+
+
 def nn_parser(pose, left, right):
     """
     Parses and transforms pose, left hand, and right hand data into a standardized,
@@ -34,23 +53,26 @@ def nn_parser(pose, left, right):
         A flattened NumPy array combining the processed body, left hand, and right
         hand keypoints in a standardized format.
     """
-    # Centrar todos los puntos del cuerpo sean hip-centric, y los de la mano(excepto la muñeca) sean wrist centric
-    # Hip-centric
+    # Calculate hip center before modifying pose
     hip_distance_v = pose[24] - pose[23]
     hip_center = pose[24] - (hip_distance_v / 2)
-    pose = pose - hip_center
+
+    # Make all points hip-centric
+    pose = make_hip_centric(pose)
     left = left - hip_center
     right = right - hip_center
-    # Wrist-centric
+
+    # Wrist-centric for hands (excluding the wrist itself)
     left[1:] = left[1:] - left[0].reshape(1, 3)
     right[1:] = right[1:] - right[0].reshape(1, 3)
 
-    # Eliminar los puntos mano y cara(no la voy a usar por ahora) de la pose
+    # Remove hand and face points from pose
     mask = np.ones(pose.shape[0], dtype=bool)
     mask[15:23] = False
     mask[0:11] = False
-    mask[25:] = False # Por si las dudas
+    mask[25:] = False  # Por si las dudas
     pose = pose[mask]
+
     return np.concatenate((pose, left, right), axis=0).flatten()
 
 
@@ -66,13 +88,12 @@ class Landmarks:
         positions: List[np.ndarray] = field(default_factory=list)
         velocities: List[np.ndarray] = field(default_factory=list)
 
-    def __init__(self, max_frames_interpolation=48, fps=12):
+    def __init__(self, max_frames_interpolation=48):
         self.pose = []
         self.empty_pose = SegmentTree()
         self.left = self.Hand()
         self.right = self.Hand()
         self.max_frames_interpolation = max_frames_interpolation
-        self.fps = fps
 
         if Landmarks._neutral_hand is None:
             path = Path(__file__).resolve().with_name("neutral_hand.npy")
@@ -85,8 +106,8 @@ class Landmarks:
 
     def _mediapipe_parser(self, lm, arr, s, pose=False):
         if lm:
-            r_idx = 25 if pose else len(lm.landmark)
-            arr.append(mp_to_arr(lm.landmark[:r_idx]))
+            r_idx = 25 if pose else len(lm)
+            arr.append(mp_to_arr(lm[:r_idx]))
         else:
             s.add_point(len(arr))
             arr.append(None)
@@ -99,7 +120,7 @@ class Landmarks:
             yield arr[start - 1] + interpol_diff * (i + 1)
         yield None
 
-    def get_landmarks(self, continuous=False):
+    def get_landmarks(self, continuous=False, return_frame_number=False):
         """
         Generator function that processes and returns landmarks frame by frame, handling pose interpolations
         and missing data conditions. It also processes hand landmarks for both left and right hands while
@@ -124,6 +145,9 @@ class Landmarks:
         current_frame = 0
         pose_interpolated = None
         jumped = False  # Track if we just jumped over a gap
+
+        if any(frame is not None for frame in self.pose): # If there isnt a single pose frame, just dont return
+            return
 
         while True:
             # Check if we've reached the end of available frames
@@ -242,7 +266,12 @@ class Landmarks:
                 if self.pose[current_frame - 1] is None and pose_interpolated is None:
                     jumped = True
 
-            yield pose_frame, left_frame, right_frame, jumped
+            if continuous:
+                yield pose_frame, left_frame, right_frame, jumped
+            elif return_frame_number:
+                yield pose_frame, left_frame, right_frame, current_frame
+            else:
+                yield pose_frame, left_frame, right_frame
             current_frame += 1
 
     def _rodrigues(self, vec1, vec2):

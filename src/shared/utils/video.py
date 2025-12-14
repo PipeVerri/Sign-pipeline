@@ -13,7 +13,7 @@ def frame_reader(cap, fps=24, return_timestamp=False, return_frame=False):
         if frame_count % skip_rate == 0:
             if return_timestamp:
                 timestamp = frame_count / fps_original
-                yield frame, int(timestamp * 1000)
+                yield frame, timestamp
             elif return_frame:
                 yield frame, frame_count
             else:
