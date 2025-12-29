@@ -1,5 +1,8 @@
 import time
 
+from fontTools.misc.plistlib import end_key
+from scipy.linalg.cython_lapack import shgeqz
+
 from src.shared.utils.mediapipe.parse import mp_to_arr
 import numpy as np
 from src.shared.utils.ds.segment_tree import SegmentTree
@@ -28,7 +31,7 @@ def make_hip_centric(pose):
     return pose - hip_center
 
 
-def nn_parser(pose, left, right):
+def nn_parser(pose, left, right, face):
     """
     Parses and transforms pose, left hand, and right hand data into a standardized,
     hip and wrist centric format. The function ensures the body points are
@@ -57,8 +60,8 @@ def nn_parser(pose, left, right):
     hip_distance_v = pose[24] - pose[23]
     hip_center = pose[24] - (hip_distance_v / 2)
 
-    # Make all points hip-centric
-    pose = make_hip_centric(pose)
+    # Make all points hip-centric(also move the hands so they dont get detached from the pose)
+    pose = pose - hip_center
     left = left - hip_center
     right = right - hip_center
 
@@ -70,11 +73,10 @@ def nn_parser(pose, left, right):
     mask = np.ones(pose.shape[0], dtype=bool)
     mask[15:23] = False
     mask[0:11] = False
-    mask[25:] = False  # Por si las dudas
+    mask[25:] = False  # Just in case that the pose array hasnt been trimmed
     pose = pose[mask]
 
-    return np.concatenate((pose, left, right), axis=0).flatten()
-
+    return np.concatenate((pose, left, right, face), axis=0).flatten()
 
 class Landmarks:
     _neutral_hand = None
@@ -94,20 +96,23 @@ class Landmarks:
         empty: SegmentTree = field(default_factory=SegmentTree)
         interpolator = None
 
-    def __init__(self, max_frames_interpolation=48):
+    def __init__(self, max_frames_interpolation=48, max_face_frames_interpolation=12):
         self.pose = self.InterpolatedLandmarks()
+        self.face = self.InterpolatedLandmarks()
         self.left = self.Hand()
         self.right = self.Hand()
         self.max_frames_interpolation = max_frames_interpolation
+        self.max_face_frames_interpolation = max_face_frames_interpolation
 
         if Landmarks._neutral_hand is None:
             path = Path(__file__).resolve().with_name("neutral_hand.npy")
             Landmarks._neutral_hand = np.load(path)
 
-    def add(self, pose, left, right):
+    def add(self, pose, left, right, face):
         self._mediapipe_parser(pose, self.pose, pose=True)
         self._mediapipe_parser(left, self.left)
         self._mediapipe_parser(right, self.right)
+        self._mediapipe_parser(face, self.face)
 
     def _mediapipe_parser(self, lm, store, pose=False):
         if lm:
@@ -117,12 +122,12 @@ class Landmarks:
             store.empty.add_point(len(store.lm))
             store.lm.append(None)
 
-    def _interpolate(self, start, end, arr):
-        interpol_diff = arr[end + 1] - arr[start - 1]
+    def _interpolate(self, start, end, store):
+        interpol_diff = store.lm[end + 1] - store.lm[start - 1]
         interpol_length = end - start + 1
         interpol_diff = interpol_diff / interpol_length
         for i in range(interpol_length):
-            yield arr[start - 1] + interpol_diff * (i + 1)
+            yield store.lm[start - 1] + interpol_diff * (i + 1)
         yield None
 
     def get_landmarks(self, continuous=False, return_frame_number=False):
@@ -159,122 +164,82 @@ class Landmarks:
                 else:
                     break
 
-            # If currently interpolating, get next interpolated frame
-            if self.pose.interpolator is not None:
-                pose_frame = next(self.pose.interpolator)
-                if pose_frame is None:
-                    pose_interpolated = None
-                    current_frame += 1
+            pose_frame, jumped_position, should_wait = self._get_interpolated_frame(self.pose, current_frame, self.max_frames_interpolation)
+            if jumped_position is not None:
+                current_frame = jumped_position
+                jumped = True
+                continue
+            elif should_wait:
+                if not continuous: # There is no point in waiting, no new frames will be passed
+                    break
+                else: # We should wait until I can either interpolate or find a frame to jump to
+                    time.sleep(0.001)
                     continue
 
-            # If current frame has data, use it directly
-            if self.pose.lm[current_frame] is not None:
-                pose_frame = self.pose.lm[current_frame]
-            else:
-                # Current frame is None - check if we can/should interpolate
-                start, end = self.pose.empty.get_interval(current_frame)
-
-                # Special case: if we're at the beginning (start == 0) and current frame is None,
-                # we should skip to the first valid frame
-                if start == 0 and current_frame == 0:
-                    if end != len(self.pose.lm) - 1:
-                        current_frame = end + 1
-                        jumped = True
-                        continue
-                    else:
-                        # No valid frames at all
-                        if continuous:
-                            time.sleep(0.001)
-                            continue
-                        else:
-                            break
-
-                # To interpolate, we need:
-                # 1. A complete interval (end != current_frame)
-                # 2. The frame after the interval to exist (end + 1 < len)
-                # 3. The frame after the interval to have data
-                can_interpolate = (end != current_frame and
-                                   (end + 1) < len(self.pose.lm) and
-                                   self.pose[end + 1] is not None)
-
-                if can_interpolate:
-                    interpol_length = end - start + 1
-
-                    if interpol_length > self.max_frames_interpolation:
-                        # Gap too large - skip to next valid sequence
-                        current_frame = end + 1
-                        jumped = True  # Mark that we're jumping
-                        continue
-                    else:
-                        # Start interpolation
-                        pose_interpolated = self._interpolate(start, end, self.pose)
-                        pose_frame = next(pose_interpolated)
-                else:
-                    # Cannot interpolate yet - need to wait or skip
-                    waiting_time = current_frame - start
-
-                    if waiting_time >= self.max_frames_interpolation:
-                        # Been waiting too long
-                        if continuous:
-                            # Try to skip ahead if there's valid data beyond the gap
-                            # Find the next frame with data
-                            next_valid_frame = None
-                            for i in range(current_frame + 1, len(self.pose)):
-                                if self.pose[i] is not None:
-                                    next_valid_frame = i
-                                    break
-
-                            if next_valid_frame is not None:
-                                # Skip to the next valid frame
-                                current_frame = next_valid_frame
-                                jumped = True  # Mark that we're jumping
-                                continue
-                            else:
-                                # No valid frame found, wait at the end
-                                current_frame = len(self.pose)
-                                continue
-                        else:
-                            break
-                    else:
-                        # Still within acceptable wait time - WAIT FOR MORE FRAMES
-                        if continuous:
-                            # CRITICAL FIX: Must sleep here!
-                            time.sleep(0.001)
-                            continue
-                        else:
-                            # In non-continuous mode, we can't wait, so break
-                            break
-
             # We have a valid pose_frame - update the array
-            self.pose[current_frame] = pose_frame
+            self.pose.lm[current_frame] = pose_frame
+
+            # Now process the face
+            face_frame, _, _ = self._get_interpolated_frame(self.face, current_frame, self.max_face_frames_interpolation)
+            if face_frame is None:
+                face_frame = np.zeros(478)
 
             # Process hands
             left_frame = self._process_hand(self.left, current_frame, pose_frame, 13, 15)
             right_frame = self._process_hand(self.right, current_frame, pose_frame, 14, 16)
 
-            # Yield results (pose, left_hand, right_hand, jumped)
-            # Check if we jumped (skipped frames without interpolating)
-            jumped = False
-            if current_frame > 0:
-                # If the previous frame was None and we didn't interpolate, we jumped
-                if self.pose[current_frame - 1] is None and pose_interpolated is None:
-                    jumped = True
-
+            # Yield results (pose, left_hand, right_hand, face_frame, jumped)
             if continuous:
-                yield pose_frame, left_frame, right_frame, jumped
+                yield pose_frame, left_frame, right_frame, face_frame, jumped
             elif return_frame_number:
-                yield pose_frame, left_frame, right_frame, current_frame
+                yield pose_frame, left_frame, right_frame, face_frame, current_frame
             else:
-                yield pose_frame, left_frame, right_frame
-            current_frame += 1
+                yield pose_frame, left_frame, right_frame, face_frame
 
-    def _process_interpolated(self, store, current_frame):
+            current_frame += 1
+            jumped = False
+
+    def _get_interpolated_frame(self, store, current_frame, max_interpolation):
+        """
+        :param store: The landmarks store
+        :param current_frame: The current_frame
+        :return: A tuple with:
+        - The interpolated/fetched frame or None if it cant be interpolated and it should jump/return "no_frame"
+        - Jumped frame. None if it shouldnt jump, the frame number if it should jump
+        - Should wait. True if it should busy-wait/break, False if it shouldnt
+        """
+        # If currently interpolating, get next interpolated frame
         if store.interpolator is not None:
-            pose_frame = next(store.interpolator)
-            if pose_frame is None:
-                pose_interpolated = None
-                current_frame += 1
-                continue
+            frame = next(store.interpolator)
+            if frame is None:
+                store.interpolator = None
+            else:
+                return frame, None, False
+        if store.lm[current_frame] is not None:
+            return store.lm[current_frame], None, False
+        else:
+            # Current frame is None - check if we can/should interpolate
+            start, end = store.empty.get_interval(current_frame)
+            has_left_limit = start != 0
+            has_right_limit = (end + 1) < len(store.lm)
+            # Special case: if we're at the beginning (start == 0) and the current frame is None, we cant interpolate
+            if not has_left_limit:
+                if has_right_limit:
+                    return None, end + 1, False
+                else:
+                    return None, None, True
+            else:
+                if has_right_limit and store.lm[end + 1] is not None: # If we can interpolate
+                    interpol_length = end - start + 1
+                    if interpol_length > max_interpolation:
+                        # Gap too large - skip to next valid sequence
+                        return None, end + 1, False
+                    else:
+                        # Start interpolation
+                        store.interpolator = self._interpolate(start, end, store)
+                        return next(store.interpolator), None, False
+                else: # We dont have a right limit yet, we should wait/break
+                   return None, None, True
 
     def _rodrigues(self, vec1, vec2):
         v1 = vec1 / np.linalg.norm(vec1)

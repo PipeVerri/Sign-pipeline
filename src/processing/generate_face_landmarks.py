@@ -1,3 +1,5 @@
+# The previous version of this script didnt generate the face landmarks, this script is only for adding them back
+
 import os, sys, contextlib
 import logging
 
