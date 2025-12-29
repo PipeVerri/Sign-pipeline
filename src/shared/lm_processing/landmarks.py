@@ -88,9 +88,14 @@ class Landmarks:
         positions: List[np.ndarray] = field(default_factory=list)
         velocities: List[np.ndarray] = field(default_factory=list)
 
+    @dataclass
+    class InterpolatedLandmarks:
+        lm: List[np.ndarray] = field(default_factory=list)
+        empty: SegmentTree = field(default_factory=SegmentTree)
+        interpolator = None
+
     def __init__(self, max_frames_interpolation=48):
-        self.pose = []
-        self.empty_pose = SegmentTree()
+        self.pose = self.InterpolatedLandmarks()
         self.left = self.Hand()
         self.right = self.Hand()
         self.max_frames_interpolation = max_frames_interpolation
@@ -100,17 +105,17 @@ class Landmarks:
             Landmarks._neutral_hand = np.load(path)
 
     def add(self, pose, left, right):
-        self._mediapipe_parser(pose, self.pose, self.empty_pose, pose=True)
-        self._mediapipe_parser(left, self.left.lm, self.left.empty)
-        self._mediapipe_parser(right, self.right.lm, self.right.empty)
+        self._mediapipe_parser(pose, self.pose, pose=True)
+        self._mediapipe_parser(left, self.left)
+        self._mediapipe_parser(right, self.right)
 
-    def _mediapipe_parser(self, lm, arr, s, pose=False):
+    def _mediapipe_parser(self, lm, store, pose=False):
         if lm:
             r_idx = 25 if pose else len(lm)
-            arr.append(mp_to_arr(lm[:r_idx]))
+            store.lm.append(mp_to_arr(lm[:r_idx]))
         else:
-            s.add_point(len(arr))
-            arr.append(None)
+            store.empty.add_point(len(store.lm))
+            store.lm.append(None)
 
     def _interpolate(self, start, end, arr):
         interpol_diff = arr[end + 1] - arr[start - 1]
@@ -143,15 +148,11 @@ class Landmarks:
             - jumped: A boolean indicating whether the generator jumped to a new frame due to missing data.
         """
         current_frame = 0
-        pose_interpolated = None
         jumped = False  # Track if we just jumped over a gap
-
-        if any(frame is not None for frame in self.pose): # If there isnt a single pose frame, just dont return
-            return
 
         while True:
             # Check if we've reached the end of available frames
-            if current_frame >= len(self.pose):
+            if current_frame >= len(self.pose.lm):
                 if continuous:
                     time.sleep(0.001)
                     continue
@@ -159,32 +160,25 @@ class Landmarks:
                     break
 
             # If currently interpolating, get next interpolated frame
-            if pose_interpolated is not None:
-                pose_frame = next(pose_interpolated)
+            if self.pose.interpolator is not None:
+                pose_frame = next(self.pose.interpolator)
                 if pose_frame is None:
                     pose_interpolated = None
                     current_frame += 1
                     continue
 
             # If current frame has data, use it directly
-            if self.pose[current_frame] is not None:
-                pose_frame = self.pose[current_frame]
+            if self.pose.lm[current_frame] is not None:
+                pose_frame = self.pose.lm[current_frame]
             else:
                 # Current frame is None - check if we can/should interpolate
-                start, end = self.empty_pose.get_interval(current_frame)
+                start, end = self.pose.empty.get_interval(current_frame)
 
                 # Special case: if we're at the beginning (start == 0) and current frame is None,
                 # we should skip to the first valid frame
                 if start == 0 and current_frame == 0:
-                    # Find first valid frame
-                    first_valid_frame = None
-                    for i in range(len(self.pose)):
-                        if self.pose[i] is not None:
-                            first_valid_frame = i
-                            break
-
-                    if first_valid_frame is not None:
-                        current_frame = first_valid_frame
+                    if end != len(self.pose.lm) - 1:
+                        current_frame = end + 1
                         jumped = True
                         continue
                     else:
@@ -200,7 +194,7 @@ class Landmarks:
                 # 2. The frame after the interval to exist (end + 1 < len)
                 # 3. The frame after the interval to have data
                 can_interpolate = (end != current_frame and
-                                   (end + 1) < len(self.pose) and
+                                   (end + 1) < len(self.pose.lm) and
                                    self.pose[end + 1] is not None)
 
                 if can_interpolate:
@@ -274,6 +268,14 @@ class Landmarks:
                 yield pose_frame, left_frame, right_frame
             current_frame += 1
 
+    def _process_interpolated(self, store, current_frame):
+        if store.interpolator is not None:
+            pose_frame = next(store.interpolator)
+            if pose_frame is None:
+                pose_interpolated = None
+                current_frame += 1
+                continue
+
     def _rodrigues(self, vec1, vec2):
         v1 = vec1 / np.linalg.norm(vec1)
         v2 = vec2 / np.linalg.norm(vec2)
@@ -314,10 +316,10 @@ class Landmarks:
     def _process_hand(self, hand: Hand, current_frame, pose_frame, elbow_num, wrist_num):
         # Ahora fijarme si puedo retornar la mano
         if hand.lm[current_frame] is not None:
-#            if hand.ratio is None:
-#                hand_vec_length = np.linalg.norm(hand.lm[current_frame][0] - hand.lm[current_frame][9])
-#                forearm_vec_length = np.linalg.norm(pose_frame[elbow_num] - pose_frame[wrist_num])
-#                hand.ratio = forearm_vec_length / hand_vec_length
+            if hand.ratio is None:
+                hand_vec_length = np.linalg.norm(hand.lm[current_frame][0] - hand.lm[current_frame][9])
+                forearm_vec_length = np.linalg.norm(pose_frame[elbow_num] - pose_frame[wrist_num])
+                hand.ratio = forearm_vec_length / hand_vec_length
             hand_frame = hand.lm[current_frame]
         else:
             # Ya checkee el limite de longitud de interpolacion antes. No voy a interpolar por ahora
@@ -335,7 +337,7 @@ class Landmarks:
             # Rotar la mano para que sufra la misma rotacion que sufrio el antebrazo
             # Ver que vector y que angulo describen la rotacion de v_antebrazo. Esta dado por el codo y la muñeca(de la pose)
             v_forearm_new = pose_frame[elbow_num] - pose_frame[wrist_num]
-            if start != 0:
+            if start != 0 and self.pose[start - 1] is not None:
                 v_forearm_old = self.pose[start - 1][elbow_num] - self.pose[start - 1][wrist_num]  # Origen de coordenadas en el codo
                 # Ahora calcular el eje y el angulo
                 R = self._rodrigues(v_forearm_old, v_forearm_new)

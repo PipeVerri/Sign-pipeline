@@ -13,3 +13,5 @@ Otros canales que podria usar serian:
 Bugs:
 - Hay veces que alguien se va de frame y el visualize_landmarks_processing se frena
 - La escala de las manos anda para el culo, creo que es porque la posicion z de los pose landmarks anda mal
+
+390 horas de video, 20 veces mas que LSA-T
