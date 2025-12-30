@@ -20,9 +20,9 @@ def process_file(PATH, f):
         speech_timestamps = get_speech_timestamps(wav, model, return_seconds=False)
         if len(speech_timestamps) == 0:
             name = f.split(".")[0]
-            os.rename(PATH / "video" / f"{name}.mp4", PATH / "unlabeled" / f"{name}.mp4")
-            delete_file(PATH / "audio" / f)
-            delete_file(PATH / "subs" / f"{name}.vtt")
+            os.rename(PATH / "video" / f"{name}.mp4", PATH / "unlabeled/video" / f"{name}.mp4")
+            os.rename(PATH / "audio" / f"{name}.mp3", PATH / "unlabeled/audio" / f"{name}.mp3")
+            delete_file(PATH / f"{name}.vtt")
             return f"Moved {name} to unlabeled"
         return f"Processed {f} - speech detected"
     except Exception as e:
@@ -31,7 +31,8 @@ def process_file(PATH, f):
 
 def process_folder(PATH, max_workers=24):
     """Process all files in a folder in parallel using threads"""
-    os.makedirs(PATH / "unlabeled", exist_ok=True)
+    os.makedirs(PATH / "unlabeled/video", exist_ok=True)
+    os.makedirs(PATH / "unlabeled/audio", exist_ok=True)
     files = os.listdir(PATH / "audio")
 
     # Process files in parallel using threads
@@ -48,7 +49,7 @@ def process_folder(PATH, max_workers=24):
 
 
 if __name__ == "__main__":
-    folders = ["0-AsociacionCivil", "1-videolibros_private", "2-videolibros_public"]
+    folders = ("0-AsociacionCivil", "1-videolibros_private", "2-videolibros_public")
 
     # Process folders sequentially (one folder at a time)
     # but files within each folder in parallel using threads
