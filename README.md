@@ -23,6 +23,7 @@ El pipeline de procesado de datos es:
 4. Separo a los videos en unlabeled y labeled
    5. A los videos de CNSordos y de Locufre, como todos los que son labeled tienen subtitulos, simplemente me fijo si su archivo de subtitulos existe o no
    6. Para los otros canales, como no tienen subtitulos y hay que generarlos, uso VAD para fijarme si tienen speech o no
-7. Subo los archivos de audio no subtitulados y labeled(todos menos Locufre y CNSordos) a una VM para subtitularlos usando el notebook de create_subtitles.ipynb
+7. Subo los archivos de audio no subtitulados y labeled(todos menos Locufre y CNSordos) a una VM para subtitularlos usando el notebook de create_subtitles
+   8. En Locufre hago la excepcion de usar los subtitulos automaticos de youtube en vez de generarlos yo. Eso es porque la mayoria del tiempo tienen audio de muy alta calidad(estan en un estudio) y por la forma en que son los datos, no se si vale la pena invertir el tiempo y plata en generarle subtitulos de alta calidad
 8. Subo todos los videos(labeled o unlabeled) a una VM para generar los bounding_boxes usando YOLO
 9. Genero los landmarks de cuerpo, mano y cara para todos(labeled o unlabeled)

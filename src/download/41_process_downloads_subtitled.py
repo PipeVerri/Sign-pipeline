@@ -2,26 +2,25 @@ import os
 from pathlib import Path
 
 root_dir = Path(__file__).parent.parent.parent.resolve()
-PATH = root_dir / "data" / "raw" / "4-Locufre"
-NUMBER = "4"
 
-# Start by renaming all the subtitles to get rid of .es-x.vtt
-subtitles = [f for f in os.listdir(PATH) if f.endswith(".vtt")]
-for sub in subtitles:
-    name = sub.split(".")[0] + ".vtt"
-    os.rename(PATH / sub, PATH / name)
+def process_folder(PATH):
+    # Start by renaming all the subtitles to get rid of .es-x.vtt
+    subtitles = [f for f in os.listdir(PATH) if f.endswith(".vtt")]
+    for sub in subtitles:
+        name = sub.split(".")[0] + ".vtt"
+        os.rename(PATH / sub, PATH / name)
 
-# Now delete the videos that dont have subtitles
-os.makedirs(PATH / "unlabeled", exist_ok=True)
-videos = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
-for video in videos:
-    sub = video.split(".")[0] + ".vtt"
-    if not os.path.exists(PATH / sub):
-        os.rename(PATH / video, PATH / "unlabeled" / video)
+    # Now move the videos that don't have subtitles into unlabeled
+    os.makedirs(PATH / "unlabeled/video", exist_ok=True)
+    os.makedirs(PATH / "unlabeled/audio", exist_ok=True)
+    videos = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
+    for video in videos:
+        sub = video.split(".")[0] + ".vtt"
+        if not os.path.exists(PATH / sub):
+            os.rename(PATH / "video" / video, PATH / "unlabeled/video" / video)
+            os.rename(PATH / "audio" / video.replace(".mp4", ".mp3"), PATH / "unlabeled/audio" / video.replace(".mp4", ".mp3"))
 
-# Finish by renaming everyone in the format
-videos = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
-for idx, video in enumerate(videos):
-    name = video.split(".")[0]
-    os.rename(PATH / video, PATH / f"{NUMBER}-{idx}.mp4")
-    os.rename(PATH / f"{name}.vtt", PATH / f"{NUMBER}-{idx}.vtt")
+if __name__ == "__main__":
+    for folder in ("3-CNSordos", "4-Locufre"):
+        print(f"\nProcessing folder: {folder}")
+        process_folder(root_dir / "data" / "raw" / folder)
