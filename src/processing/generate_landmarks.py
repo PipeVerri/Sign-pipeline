@@ -98,7 +98,7 @@ def process_folder(PATH):
             with h5py.File(ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / (f.replace(".mp4", ".h5")), "r") as output_f:
                 if output_f.attrs.get("done", False):
                     return
-        except OSError:
+        except OSError: # It will raise OSError if the file doesnt exist, which is fine
             pass
 
         cap = cv2.VideoCapture(PATH / ("unlabeled" if unlabeled else "video") / f)
@@ -236,6 +236,7 @@ def process_folder(PATH):
         pass
 
 if __name__ == "__main__":
-    for folder in ["1-videolibros_private", "2-videolibros_public", "3-CNSordos", "4-Locufre"]:
+    # TODO: Set back the original folders
+    for folder in ["5-test_folder"]:
         process_folder(ROOT_DIR / "data" / "raw" / folder)
     cv2.destroyAllWindows()

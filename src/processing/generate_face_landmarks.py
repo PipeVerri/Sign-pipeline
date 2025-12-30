@@ -39,21 +39,6 @@ from dataclasses import dataclass, field
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
-pose_options = vision.PoseLandmarkerOptions(
-    base_options=python.BaseOptions(
-        model_asset_path= ROOT_DIR / "models/mediapipe/pose_landmarker_heavy.task"
-    ),
-    running_mode=vision.RunningMode.VIDEO,
-)
-
-hand_options = vision.HandLandmarkerOptions(
-    base_options=python.BaseOptions(
-        model_asset_path=ROOT_DIR / "models/mediapipe/hand_landmarker.task"
-    ),
-    running_mode=vision.RunningMode.VIDEO,
-    num_hands=2
-)
-
 face_options = vision.FaceLandmarkerOptions(
     base_options=python.BaseOptions(
         model_asset_path=ROOT_DIR / "models/mediapipe/face_landmarker.task"
@@ -98,7 +83,7 @@ def process_folder(PATH):
         adjusted_path = (PATH.name + "/unlabeled") if unlabeled else PATH.name
         try:
             with h5py.File(ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / (f.replace(".mp4", ".h5")), "r") as output_f:
-                if output_f.attrs.get("done", False):
+                if output_f.attrs.get("done", False) != 2: # Im gonna temporarily use 2 as a "done" marker for now
                     return
         except OSError:
             pass
@@ -116,20 +101,17 @@ def process_folder(PATH):
                     people[person] = PersonResults(person)
                 people[person].add_bounding_box_frame(entry["timestamp"], entry["boxes"][person])
 
-        with h5py.File(ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / f.replace(".mp4", ".h5"), "w") as output_f:
+        with h5py.File(ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / f.replace(".mp4", ".h5"), "r+") as output_f: # Read and write, file must exist
             # Now process each person's clip
             for person in people.values():
                 person_group = output_f.create_group(f"person_{person.id}")
                 for clip_index, clip in enumerate(person.clips):
                     lm = Landmarks(max_frames_interpolation=12)
-                    with vision.PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
-                        vision.HandLandmarker.create_from_options(hand_options) as hand_landmarker, \
-                        vision.FaceLandmarker.create_from_options(face_options) as face_landmarker: # Reset the model for each clip
+                    with vision.FaceLandmarker.create_from_options(face_options) as face_landmarker: # Reset the model for each clip
+                        # Check at the start if the clip exists(to see if we should even bother processing it or not)
+                        if not clip_index in person_group:
+                            continue
 
-                        static_status = 0 # 0 not checked, 1 is moving, 2 is static
-                        last_position = None
-                        checked_frames = 0
-                        max_accel = 0
                         for frame, timestamp in read_cap_segments(cap, fps=FPS, start=clip.start, end=clip.end):
                             # Start by getting the current frame's bounding box
                             bounding_box_idx = clip.boxes.bisect_left(timestamp)
@@ -151,71 +133,30 @@ def process_folder(PATH):
                             frame = np.ascontiguousarray(frame)
                             # Process the image
                             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-                            pose_result = pose_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
-                            hand_result = hand_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
                             face_result = face_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
 
                             # Parse it
-                            pose_landmarks = pose_result.pose_landmarks[0] if len(pose_result.pose_landmarks) > 0 else None
+                            pose_landmarks = np.zeros((32, 3)) # Instead of passing a None pose, I will pass a non-representative one so that I can use the Landmarks class without modifications
                             face_landmarks = face_result.face_landmarks[0] if len(face_result.face_landmarks) > 0 else None
 
-                            left_hand_landmarks = None
-                            right_hand_landmarks = None
-                            for idx in range(len(hand_result.hand_landmarks)):
-                                if idx < len(hand_result.handedness):
-                                    hand_category = hand_result.handedness[idx][0].category_name
-                                    if hand_category == "Right":
-                                        right_hand_landmarks = hand_result.hand_landmarks[idx]
-                                    else:
-                                        left_hand_landmarks = hand_result.hand_landmarks[idx]
-
                             # Add it to Landmarks
-                            lm.add(pose_landmarks, left_hand_landmarks, right_hand_landmarks, face_landmarks)
+                            lm.add(pose_landmarks, None, None, face_landmarks)
 
-                            # Check if this is just a static image and we should stop processing
-                            if static_status == 0 and pose_landmarks is not None:
-                                # Make it hip-based so that I dont interpret a moving image as a person
-                                pose_arr = make_hip_centric(mp_to_arr(pose_landmarks))
-                                # Now only take the arm vectors, and normalize it so I only store the direction data
-                                pose_arr = pose_arr[12:23, :]
-                                pose_arr = pose_arr / np.linalg.norm(pose_arr, axis=1, keepdims=True)
-                                if last_position is not None:
-                                    change = np.linalg.norm(pose_arr - last_position)
-                                    max_accel = max(max_accel, change)
-                                    if checked_frames >= MIN_CLIP_DURATION:
-                                        if max_accel < MOVING_THRESHOLD:
-                                            static_status = 2
-                                            break
-                                        else:
-                                            static_status = 1
-                                last_position = pose_arr.copy()
-                                checked_frames += 1
+                            # No need for static image checks
 
                             # Show it
                             #cv2.imshow(f, frame)
                             #cv2.waitKey(1)
 
-                        if static_status == 2 or checked_frames < FPS: # If it lasts less than a second or is static, discard it
-                            #print("Discarded")
-                            continue
+                        # Now go over each frame and append the face to the file's results
+                        idx = 0
+                        dataset = person_group[f"{clip_index}"]["landmarks"]
+                        for _, _, _, face, frame_num in lm.get_landmarks(continuous=False, return_frame_number=True):
+                            dataset[idx] = np.concatenate((dataset[idx], face.flatten()))
+                            idx += 1
 
-                        # Now go over each landmark frame, pass it through nn_parser
-                        parsed_landmarks = []
-                        timestamps = []
-                        for pose, left, right, face, frame_num in lm.get_landmarks(continuous=False, return_frame_number=True):
-                            parsed = nn_parser(pose, left, right, face)
-                            parsed_landmarks.append(parsed)
-                            timestamps.append(clip.start + (frame_num / FPS))
-
-                        # And save it
-                        if len(parsed_landmarks) > 0:
-                            clip_group = person_group.create_group(f"{clip_index}")
-                            clip_group.attrs["start"] = clip.start
-                            clip_group.attrs["end"] = clip.end
-                            clip_group.create_dataset("landmarks", data=parsed_landmarks)
-                            clip_group.create_dataset("timestamps", data=timestamps)
-            output_f.attrs["fps"] = FPS
-            output_f.attrs["done"] = True
+            # Set the new done status
+            output_f.attrs["done"] = 2
         cap.release()
 
     files = sorted(os.listdir(PATH / "video"))

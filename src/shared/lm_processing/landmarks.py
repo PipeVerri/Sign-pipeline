@@ -1,8 +1,4 @@
 import time
-
-from fontTools.misc.plistlib import end_key
-from scipy.linalg.cython_lapack import shgeqz
-
 from src.shared.utils.mediapipe.parse import mp_to_arr
 import numpy as np
 from src.shared.utils.ds.segment_tree import SegmentTree
@@ -11,7 +7,6 @@ from typing import List, Dict
 from pathlib import Path
 
 np.seterr(divide='raise', invalid='raise')
-
 
 def make_hip_centric(pose):
     """
@@ -182,7 +177,7 @@ class Landmarks:
             # Now process the face
             face_frame, _, _ = self._get_interpolated_frame(self.face, current_frame, self.max_face_frames_interpolation)
             if face_frame is None:
-                face_frame = np.zeros(478)
+                face_frame = np.full((478, 3), np.inf)
 
             # Process hands
             left_frame = self._process_hand(self.left, current_frame, pose_frame, 13, 15)
@@ -302,8 +297,8 @@ class Landmarks:
             # Rotar la mano para que sufra la misma rotacion que sufrio el antebrazo
             # Ver que vector y que angulo describen la rotacion de v_antebrazo. Esta dado por el codo y la muñeca(de la pose)
             v_forearm_new = pose_frame[elbow_num] - pose_frame[wrist_num]
-            if start != 0 and self.pose[start - 1] is not None:
-                v_forearm_old = self.pose[start - 1][elbow_num] - self.pose[start - 1][wrist_num]  # Origen de coordenadas en el codo
+            if start != 0 and self.pose.lm[start - 1] is not None:
+                v_forearm_old = self.pose.lm[start - 1][elbow_num] - self.pose.lm[start - 1][wrist_num]  # Origen de coordenadas en el codo
                 # Ahora calcular el eje y el angulo
                 R = self._rodrigues(v_forearm_old, v_forearm_new)
             else:
