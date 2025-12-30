@@ -15,3 +15,14 @@ Bugs:
 - La escala de las manos anda para el culo, creo que es porque la posicion z de los pose landmarks anda mal
 
 390 horas de video, 20 veces mas que LSA-T
+
+El pipeline de procesado de datos es:
+1. Genero la lista de videos a descargar haciendo scraping del sitio de videolibros
+2. Descargo todos los videos publicos de los canales de youtube + la lista de URLs scrapeada
+3. Separo los videos en audio y video
+4. Separo a los videos en unlabeled y labeled
+   5. A los videos de CNSordos y de Locufre, como todos los que son labeled tienen subtitulos, simplemente me fijo si su archivo de subtitulos existe o no
+   6. Para los otros canales, como no tienen subtitulos y hay que generarlos, uso VAD para fijarme si tienen speech o no
+7. Subo los archivos de audio no subtitulados y labeled(todos menos Locufre y CNSordos) a una VM para subtitularlos usando el notebook de create_subtitles.ipynb
+8. Subo todos los videos(labeled o unlabeled) a una VM para generar los bounding_boxes usando YOLO
+9. Genero los landmarks de cuerpo, mano y cara para todos(labeled o unlabeled)

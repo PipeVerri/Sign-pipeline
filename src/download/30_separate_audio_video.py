@@ -24,31 +24,34 @@ def extract_video(video_path, video_output_path):
         str(video_output_path)
     ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
-PATH = root_dir / "data" / "raw" / "4-Locufre"
+def process_folder(PATH):
+    files = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
 
-files = [f for f in os.listdir(PATH) if f.endswith(".mp4")]
+    audio_dir = PATH / "audio"
+    video_dir = PATH / "video"
+    audio_dir.mkdir(exist_ok=True)
+    video_dir.mkdir(exist_ok=True)
 
-audio_dir = PATH / "audio"
-video_dir = PATH / "video"
-audio_dir.mkdir(exist_ok=True)
-video_dir.mkdir(exist_ok=True)
+    # Prepare args for audio extraction
+    audio_jobs = [
+        (PATH / f, audio_dir / f.replace(".mp4", ".mp3"))
+        for f in files
+    ]
 
-# Prepare args for audio extraction
-audio_jobs = [
-    (PATH / f, audio_dir / f.replace(".mp4", ".mp3"))
-    for f in files
-]
+    # Prepare args for video extraction
+    video_jobs = [
+        (PATH / f, video_dir / f)
+        for f in files
+    ]
 
-# Prepare args for video extraction
-video_jobs = [
-    (PATH / f, video_dir / f)
-    for f in files
-]
-
-if __name__ == "__main__":
     with Pool(12) as p:
         print("Extracting audio...")
         p.starmap(extract_audio, audio_jobs)
         print("Extracting video...")
         p.starmap(extract_video, video_jobs)
     print("Done!")
+
+if __name__ == "__main__":
+    for folder in ["0-AsociacionCivil", "1-videolibros_private", "2-videolibros_public", "3-CNSordos", "4-Locufre"]:
+        print(f"\nProcessing folder: {folder}")
+        process_folder(root_dir / "data" / "raw" / folder)
