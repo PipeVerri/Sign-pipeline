@@ -29,7 +29,6 @@ import cv2
 from sortedcontainers import SortedDict
 from typing import Any
 import numpy as np
-from src.shared.lm_processing.landmarks import Landmarks, nn_parser, make_hip_centric
 from src.shared.utils.mediapipe import mp_to_arr
 import json
 import h5py
@@ -45,6 +44,12 @@ BOUNDING_BOX_PADDING = 0.2
 FPS = 6
 MIN_CLIP_DURATION = 6 * FPS
 MOVING_THRESHOLD = 0.25
+
+# Landmark dimensions
+POSE_LANDMARKS = 33
+HAND_LANDMARKS = 21
+FACE_LANDMARKS = 478
+LANDMARK_DIMS = 3  # x, y, z coordinates
 
 
 def create_pose_options():
@@ -192,11 +197,26 @@ def extract_hand_landmarks(hand_result):
     return left_hand, right_hand
 
 
+def landmarks_to_array(landmarks, expected_count):
+    """Convert MediaPipe landmarks to numpy array, or NaN array if None."""
+    if landmarks is None:
+        return np.full((expected_count, LANDMARK_DIMS), np.nan)
+    return mp_to_arr(landmarks)
+
+
 def compute_pose_motion_features(pose_landmarks):
     """Compute normalized arm vectors for motion detection."""
-    pose_arr = make_hip_centric(mp_to_arr(pose_landmarks))
+    if pose_landmarks is None:
+        return None
+
+    pose_arr = mp_to_arr(pose_landmarks)
+    # Assuming make_hip_centric uses landmarks, we'll do basic normalization
+    # If you need the exact make_hip_centric behavior, you can add it back
     pose_arr = pose_arr[12:23, :]
-    return pose_arr / np.linalg.norm(pose_arr, axis=1, keepdims=True)
+    norms = np.linalg.norm(pose_arr, axis=1, keepdims=True)
+    # Avoid division by zero
+    norms = np.where(norms == 0, 1, norms)
+    return pose_arr / norms
 
 
 def check_motion_status(pose_landmarks, last_position, checked_frames, max_accel):
@@ -205,6 +225,9 @@ def check_motion_status(pose_landmarks, last_position, checked_frames, max_accel
         return last_position, checked_frames, max_accel, 0
 
     pose_features = compute_pose_motion_features(pose_landmarks)
+
+    if pose_features is None:
+        return last_position, checked_frames, max_accel, 0
 
     if last_position is not None:
         change = np.linalg.norm(pose_features - last_position)
@@ -224,25 +247,32 @@ def should_discard_clip(static_status, checked_frames):
     return static_status == 2 or checked_frames < FPS
 
 
-def parse_landmarks_batch(lm, clip_start):
-    """Parse all landmarks in a batch."""
-    parsed_landmarks = []
-    timestamps = []
+def prepare_raw_landmarks(pose_lm_list, left_lm_list, right_lm_list, face_lm_list):
+    """Convert landmark lists to numpy arrays with NaN for missing data."""
+    pose_arrays = [landmarks_to_array(lm, POSE_LANDMARKS) for lm in pose_lm_list]
+    left_arrays = [landmarks_to_array(lm, HAND_LANDMARKS) for lm in left_lm_list]
+    right_arrays = [landmarks_to_array(lm, HAND_LANDMARKS) for lm in right_lm_list]
+    face_arrays = [landmarks_to_array(lm, FACE_LANDMARKS) for lm in face_lm_list]
 
-    for pose, left, right, face, frame_num in lm.get_landmarks(continuous=False, return_frame_number=True):
-        parsed = nn_parser(pose, left, right, face)
-        parsed_landmarks.append(parsed)
-        timestamps.append(clip_start + (frame_num / FPS))
+    return {
+        'pose': np.array(pose_arrays),
+        'left_hand': np.array(left_arrays),
+        'right_hand': np.array(right_arrays),
+        'face': np.array(face_arrays)
+    }
 
-    return parsed_landmarks, timestamps
 
-
-def save_clip_to_h5(person_group, clip_index, clip, parsed_landmarks, timestamps):
+def save_clip_to_h5(person_group, clip_index, clip, landmark_data, timestamps):
     """Save a single clip's data to HDF5."""
     clip_group = person_group.create_group(f"{clip_index}")
     clip_group.attrs["start"] = clip.start
     clip_group.attrs["end"] = clip.end
-    clip_group.create_dataset("landmarks", data=parsed_landmarks)
+
+    # Save each landmark type separately
+    clip_group.create_dataset("pose_landmarks", data=landmark_data['pose'])
+    clip_group.create_dataset("left_hand_landmarks", data=landmark_data['left_hand'])
+    clip_group.create_dataset("right_hand_landmarks", data=landmark_data['right_hand'])
+    clip_group.create_dataset("face_landmarks", data=landmark_data['face'])
     clip_group.create_dataset("timestamps", data=timestamps)
 
 
@@ -312,7 +342,11 @@ def process_person_clips_optimized(person, cap, output_f):
         clip_data.append({
             'index': clip_index,
             'clip': clip,
-            'lm': Landmarks(max_frames_interpolation=12),
+            'pose_lm': [],
+            'left_lm': [],
+            'right_lm': [],
+            'face_lm': [],
+            'timestamps': [],
             'static_status': 0,
             'last_position': None,
             'checked_frames': 0,
@@ -356,8 +390,12 @@ def process_person_clips_optimized(person, cap, output_f):
             face_landmarks = extract_face_landmarks(face_result)
             left_hand, right_hand = extract_hand_landmarks(hand_result)
 
-            # Add to landmark collection
-            clip_entry['lm'].add(pose_landmarks, left_hand, right_hand, face_landmarks)
+            # Store raw landmarks
+            clip_entry['pose_lm'].append(pose_landmarks)
+            clip_entry['left_lm'].append(left_hand)
+            clip_entry['right_lm'].append(right_hand)
+            clip_entry['face_lm'].append(face_landmarks)
+            clip_entry['timestamps'].append(timestamp)
 
             # Check for static content
             if clip_entry['static_status'] == 0:
@@ -375,23 +413,33 @@ def process_person_clips_optimized(person, cap, output_f):
             if should_discard_clip(cd['static_status'], cd['checked_frames']):
                 continue
 
-            parsed_landmarks, timestamps = parse_landmarks_batch(cd['lm'], cd['clip'].start)
-
-            if len(parsed_landmarks) > 0:
-                save_clip_to_h5(person_group, cd['index'], cd['clip'], parsed_landmarks, timestamps)
+            if len(cd['timestamps']) > 0:
+                landmark_data = prepare_raw_landmarks(
+                    cd['pose_lm'],
+                    cd['left_lm'],
+                    cd['right_lm'],
+                    cd['face_lm']
+                )
+                save_clip_to_h5(
+                    person_group,
+                    cd['index'],
+                    cd['clip'],
+                    landmark_data,
+                    np.array(cd['timestamps'])
+                )
 
 
 def process_file(PATH, filename, unlabeled=False):
     """Process a single video file."""
-    adjusted_path = (PATH.name + "/unlabeled") if unlabeled else PATH.name
+    adjusted_path = (PATH.name + "/unlabeled/video") if unlabeled else PATH.name
     output_path = ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / filename.replace(".mp4", ".h5")
 
     # Check if already processed
-    #if check_if_already_processed(output_path):
-    #    return
+    if check_if_already_processed(output_path):
+        return
 
     # Open video
-    video_path = PATH / ("unlabeled" if unlabeled else "video") / filename
+    video_path = PATH / ("unlabeled/video" if unlabeled else "video") / filename
     cap = cv2.VideoCapture(str(video_path))
 
     # Load bounding boxes
@@ -410,6 +458,7 @@ def process_file(PATH, filename, unlabeled=False):
         output_f.attrs["done"] = True
 
     cap.release()
+    print(f"Processed {filename}")
 
 
 def process_folder(PATH):
@@ -417,7 +466,7 @@ def process_folder(PATH):
     os.makedirs(ROOT_DIR / "data" / "processed" / "landmarks" / PATH.name / "unlabeled", exist_ok=True)
 
     files = sorted(os.listdir(PATH / "video"))
-    unlabeled_files = sorted(os.listdir(PATH / "unlabeled"))
+    unlabeled_files = sorted(os.listdir(PATH / "unlabeled" / "video")) if os.path.exists(PATH / "unlabeled") else []
 
     def process_labeled(f):
         process_file(PATH, f, unlabeled=False)
@@ -425,12 +474,14 @@ def process_folder(PATH):
     def process_unlabeled(f):
         process_file(PATH, f, unlabeled=True)
 
-    for f in files:
-        process_labeled(f)
+    pool = ProcessPool(nodes=10)
+    list(tqdm(pool.imap(process_labeled, files), total=len(files), file=sys.stdout))
+    list(tqdm(pool.imap(process_unlabeled, unlabeled_files), total=len(unlabeled_files), file=sys.stdout))
+
 
 def main():
     """Main entry point."""
-    for folder in ["5-test_folder"]:
+    for folder in sorted(os.listdir(ROOT_DIR / "data" / "raw")):
         process_folder(ROOT_DIR / "data" / "raw" / folder)
     cv2.destroyAllWindows()
 

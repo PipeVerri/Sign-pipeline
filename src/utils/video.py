@@ -1,23 +1,38 @@
-import cv2
+import av
 
-def read_cap_segments(cap, fps=6, start=0, end=None):
-    fps_original = cap.get(cv2.CAP_PROP_FPS)
-    skip_rate = int(round(fps_original / fps))
+def frames_for_segment(path, start_s, end_s=None, sample_rate=6):
+    """
+    Yield (ndarray_bgr, timestamp_s) for frames in [start_s, end_s).
+    Uses container.seek to jump to a keyframe near start_s and decodes forward.
+    """
+    container = av.open(path)
+    stream = container.streams.video[0]
+    stream.thread_type = "AUTO"
 
-    start =  int(start * fps_original)
-    end = end * fps_original if end else None
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-    frame_count = start
+    # FFmpeg's timebase for seek is AV_TIME_BASE (microseconds)
+    av_time_base = 1_000_000
+    # seek to nearest keyframe <= start_s
+    container.seek(int(start_s * av_time_base), any_frame=False, backward=True, stream=stream)
 
-    while cap.isOpened():
-        if end and frame_count >= end:
-            break
+    # how often to yield frames relative to decoded frames
+    # better: use timestamps to decide sampling, but this is simple
+    skip_every = max(1, int(round(stream.average_rate / float(sample_rate))))
 
-        ret, frame = cap.read()
-        if not ret:
-            break
+    decoded_count = 0
+    for packet in container.demux(stream):
+        for frame in packet.decode():
+            # frame.pts * frame.time_base yields timestamp in seconds
+            ts = float(frame.pts * frame.time_base)
+            if ts < start_s:
+                continue
+            if end_s is not None and ts >= end_s:
+                container.close()
+                return
 
-        if frame_count % skip_rate == 0:
-            yield frame, (frame_count / fps_original)
+            # sample every skip_every decoded frames (you can base on time instead)
+            if decoded_count % skip_every == 0:
+                img = frame.to_ndarray(format="bgr24")  # numpy array like OpenCV
+                yield img, ts
+            decoded_count += 1
 
-        frame_count += 1
+    container.close()

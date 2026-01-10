@@ -5,8 +5,8 @@ import pathlib
 from src.shared.utils.video import frame_reader
 
 ROOT_DIR = pathlib.Path(__file__).parents[2]
-VIDEO_FILE = ROOT_DIR / "data" / "raw" / "4-Locufre" / "video" / "4-1.mp4"
-JSON_FILE = ROOT_DIR / "data" / "processed" / "bounding_boxes" / "4-Locufre" / "4-1.json"
+VIDEO_FILE = ROOT_DIR / "data" / "raw" / "0-AsociacionCivil" / "video" / "0-10.mp4"
+JSON_FILE = ROOT_DIR / "data" / "processed" / "bounding_boxes" / "0-AsociacionCivil" / "0-10.json"
 
 cap = cv2.VideoCapture(VIDEO_FILE)
 with open(JSON_FILE, "r") as bb_f:
