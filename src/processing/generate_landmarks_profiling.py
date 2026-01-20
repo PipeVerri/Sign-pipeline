@@ -431,7 +431,7 @@ def process_person_clips_optimized(person, cap, output_f):
 
 def process_file(PATH, filename, unlabeled=False):
     """Process a single video file."""
-    adjusted_path = (PATH.name + "/unlabeled/video") if unlabeled else PATH.name
+    adjusted_path = (PATH.name + "/unlabeled") if unlabeled else PATH.name
     output_path = ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / filename.replace(".mp4", ".h5")
 
     # Check if already processed
@@ -458,7 +458,6 @@ def process_file(PATH, filename, unlabeled=False):
         output_f.attrs["done"] = True
 
     cap.release()
-    print(f"Processed {filename}")
 
 
 def process_folder(PATH):
@@ -474,7 +473,7 @@ def process_folder(PATH):
     def process_unlabeled(f):
         process_file(PATH, f, unlabeled=True)
 
-    pool = ProcessPool(nodes=10)
+    pool = ProcessPool(nodes=8)
     list(tqdm(pool.imap(process_labeled, files), total=len(files), file=sys.stdout))
     list(tqdm(pool.imap(process_unlabeled, unlabeled_files), total=len(unlabeled_files), file=sys.stdout))
 
