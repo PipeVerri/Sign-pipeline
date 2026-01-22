@@ -55,7 +55,8 @@ LANDMARK_DIMS = 3  # x, y, z coordinates
 def create_pose_options():
     return vision.PoseLandmarkerOptions(
         base_options=python.BaseOptions(
-            model_asset_path=ROOT_DIR / "models/mediapipe/pose_landmarker_heavy.task"
+            model_asset_path=ROOT_DIR / "models/mediapipe/pose_landmarker_heavy.task",
+            delegate=mp.tasks.BaseOptions.Delegate.GPU
         ),
         running_mode=vision.RunningMode.VIDEO,
     )
@@ -64,7 +65,8 @@ def create_pose_options():
 def create_hand_options():
     return vision.HandLandmarkerOptions(
         base_options=python.BaseOptions(
-            model_asset_path=ROOT_DIR / "models/mediapipe/hand_landmarker.task"
+            model_asset_path=ROOT_DIR / "models/mediapipe/hand_landmarker.task",
+            delegate=mp.tasks.BaseOptions.Delegate.GPU
         ),
         running_mode=vision.RunningMode.VIDEO,
         num_hands=2
@@ -74,7 +76,8 @@ def create_hand_options():
 def create_face_options():
     return vision.FaceLandmarkerOptions(
         base_options=python.BaseOptions(
-            model_asset_path=ROOT_DIR / "models/mediapipe/face_landmarker.task"
+            model_asset_path=ROOT_DIR / "models/mediapipe/face_landmarker.task",
+            delegate=mp.tasks.BaseOptions.Delegate.GPU
         ),
         running_mode=vision.RunningMode.VIDEO,
         num_faces=1,

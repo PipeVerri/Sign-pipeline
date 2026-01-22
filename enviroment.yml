@@ -1,0 +1,15 @@
+name: LSA-X
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - sortedcontainers
+  - opencv
+  - numpy
+  - requests
+  - beautifulsoup4
+  - pandas
+  - tqdm
+  - ultralytics
+  - pip:
+      - mediapipe
