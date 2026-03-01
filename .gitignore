@@ -215,3 +215,4 @@ models/
 /data
 data.zip
 backup/
+.claude/

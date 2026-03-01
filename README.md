@@ -1,6 +1,6 @@
 # LSA-X
 
-deno, ffmpeg
+deno, ffmpeg, definir el HF token
 
 Una version extendida del dataset LSA-T
 

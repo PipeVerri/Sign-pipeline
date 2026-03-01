@@ -7,7 +7,7 @@ def process_folder(PATH):
     # Start by renaming all the subtitles to get rid of .es-x.vtt
     subtitles = [f for f in os.listdir(PATH) if f.endswith(".vtt")]
     for sub in subtitles:
-        name = sub.split(".")[0] + ".vtt"
+        name = sub.split(".")[0] + ".vtt"  # yt-dlp saves subs as name.lang.vtt
         os.rename(PATH / sub, PATH / name)
 
     # Now move the videos that don't have subtitles into unlabeled

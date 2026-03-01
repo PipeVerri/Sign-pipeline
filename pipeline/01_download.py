@@ -1,15 +1,15 @@
-from src.args import parse_args
+from args import parse_args
 import os
 import yt_dlp
 
 working, config = parse_args()
 
-for source in config["download"]["sources"]:
+for source in config["sources"]:
     os.makedirs(working / "videos" / source["name"], exist_ok=True)
     ydl_opts = {
-        "format": config["download"]["options"]["format"],
+        "format": config["options"]["download"]["format"],
         "merge_output_format": "mp4",
-        "subtitleslangs": config["download"]["options"]["sub_langs"],
+        "subtitleslangs": config["options"]["download"]["sub_langs"],
         "outtmpl": str(working / "videos" / source["name"] / "%(id)s.%(ext)s"),
         "writesubtitles": True,
         "writeautomaticsub": source["auto_subs"],
