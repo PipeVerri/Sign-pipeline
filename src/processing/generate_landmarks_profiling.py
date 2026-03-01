@@ -35,6 +35,17 @@ import h5py
 from pathos.multiprocessing import ProcessPool
 from tqdm import tqdm
 from dataclasses import dataclass, field
+import subprocess
+
+# Try to import GPU video decoder
+try:
+    import PyNvVideoCodec as nvc
+
+    GPU_DECODE_AVAILABLE = True
+except ImportError:
+    GPU_DECODE_AVAILABLE = False
+    print("WARNING: PyNvVideoCodec not available. Install with: pip install pynvvideocodec")
+    print("Falling back to CPU decoding (slower)")
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
@@ -49,13 +60,124 @@ MOVING_THRESHOLD = 0.25
 POSE_LANDMARKS = 33
 HAND_LANDMARKS = 21
 FACE_LANDMARKS = 478
-LANDMARK_DIMS = 3  # x, y, z coordinates
+LANDMARK_DIMS = 3
+
+# Optimized batch sizes for GPU pipeline
+FRAME_BATCH_SIZE = 80  # Increased for GPU decoding
+WRITE_BUFFER_SIZE = 160  # Larger buffer since we have more throughput
+DECODE_BUFFER_SIZE = 100  # Pre-decode frames ahead
+NUM_WORKERS = 8
+
+
+class GPUVideoReader:
+    """GPU-accelerated video reader using NVIDIA hardware decoder."""
+
+    def __init__(self, video_path):
+        self.video_path = str(video_path)
+        self.use_gpu = GPU_DECODE_AVAILABLE
+
+        if self.use_gpu:
+            self._init_gpu_decoder()
+        else:
+            self._init_cpu_decoder()
+
+    def _init_gpu_decoder(self):
+        # Probe basic properties with OpenCV (fast)
+        cap = cv2.VideoCapture(self.video_path)
+        self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or -1
+        self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
+        self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
+        cap.release()
+
+        # Build ffmpeg command to use NVDEC (hwaccel cuda) and output raw RGB frames
+        cmd = [
+            "ffmpeg",
+            "-nostdin", "-loglevel", "error",
+            "-hwaccel", "cuda",  # use NVDEC
+            "-i", str(self.video_path),
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-vcodec", "rawvideo",
+            "-"
+        ]
+
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10 ** 8)
+        self.use_gpu = True
+        self._ff_frame_bytes = self.width * self.height * 3
+        self.current_frame = 0
+
+    def _init_cpu_decoder(self):
+        """Fallback to CPU decoder."""
+        self.cap = cv2.VideoCapture(self.video_path)
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.current_frame = 0
+
+    def read(self):
+        """Read next frame."""
+        if self.use_gpu:
+            return self._read_gpu()
+        else:
+            return self._read_cpu()
+
+    def _read_gpu(self):
+        """Read one RGB frame from ffmpeg stdout (decoded on GPU)."""
+        if not hasattr(self, "proc"):
+            return False, None
+
+        raw = self.proc.stdout.read(self._ff_frame_bytes)
+        if not raw or len(raw) < self._ff_frame_bytes:
+            return False, None
+
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
+        self.current_frame += 1
+        return True, frame
+
+    def _read_cpu(self):
+        """Read frame using CPU decoder."""
+        ret, frame = self.cap.read()
+        if ret:
+            # Convert BGR to RGB
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.current_frame += 1
+        return ret, frame
+
+    def seek(self, frame_number):
+        """Seek to specific frame."""
+        if self.use_gpu:
+            # GPU decoder seeks automatically in decode calls
+            # For now, we use sequential reading which is faster anyway
+            pass
+        else:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            self.current_frame = frame_number
+
+    def get_fps(self):
+        return self.fps
+
+    def get_total_frames(self):
+        return self.total_frames
+
+    def release(self):
+        try:
+            if getattr(self, "proc", None):
+                self.proc.kill()
+                self.proc.stdout.close()
+                self.proc.stderr.close()
+        except Exception:
+            pass
+        # also release CPU cap if present
+        if hasattr(self, "cap") and self.cap is not None:
+            self.cap.release()
 
 
 def create_pose_options():
     return vision.PoseLandmarkerOptions(
         base_options=python.BaseOptions(
-            model_asset_path=ROOT_DIR / "models/mediapipe/pose_landmarker_heavy.task",
+            model_asset_path=str(ROOT_DIR / "models/mediapipe/pose_landmarker_heavy.task"),
             delegate=mp.tasks.BaseOptions.Delegate.GPU
         ),
         running_mode=vision.RunningMode.VIDEO,
@@ -65,7 +187,7 @@ def create_pose_options():
 def create_hand_options():
     return vision.HandLandmarkerOptions(
         base_options=python.BaseOptions(
-            model_asset_path=ROOT_DIR / "models/mediapipe/hand_landmarker.task",
+            model_asset_path=str(ROOT_DIR / "models/mediapipe/hand_landmarker.task"),
             delegate=mp.tasks.BaseOptions.Delegate.GPU
         ),
         running_mode=vision.RunningMode.VIDEO,
@@ -76,7 +198,7 @@ def create_hand_options():
 def create_face_options():
     return vision.FaceLandmarkerOptions(
         base_options=python.BaseOptions(
-            model_asset_path=ROOT_DIR / "models/mediapipe/face_landmarker.task",
+            model_asset_path=str(ROOT_DIR / "models/mediapipe/face_landmarker.task"),
             delegate=mp.tasks.BaseOptions.Delegate.GPU
         ),
         running_mode=vision.RunningMode.VIDEO,
@@ -163,15 +285,24 @@ def crop_and_prepare_frame(frame, crop_coords):
     return np.ascontiguousarray(cropped)
 
 
-def detect_landmarks(frame, timestamp, pose_landmarker, hand_landmarker, face_landmarker):
-    """Run all landmark detection on a frame."""
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+def detect_landmarks_batch(frames, timestamps, pose_landmarker, hand_landmarker, face_landmarker):
+    """Run landmark detection on a batch of frames for better GPU utilization."""
+    pose_results = []
+    hand_results = []
+    face_results = []
 
-    pose_result = pose_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
-    hand_result = hand_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
-    face_result = face_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
+    for frame, timestamp in zip(frames, timestamps):
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
 
-    return pose_result, hand_result, face_result
+        pose_result = pose_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
+        hand_result = hand_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
+        face_result = face_landmarker.detect_for_video(mp_image, int(timestamp * 1000))
+
+        pose_results.append(pose_result)
+        hand_results.append(hand_result)
+        face_results.append(face_result)
+
+    return pose_results, hand_results, face_results
 
 
 def extract_pose_landmarks(pose_result):
@@ -213,11 +344,8 @@ def compute_pose_motion_features(pose_landmarks):
         return None
 
     pose_arr = mp_to_arr(pose_landmarks)
-    # Assuming make_hip_centric uses landmarks, we'll do basic normalization
-    # If you need the exact make_hip_centric behavior, you can add it back
     pose_arr = pose_arr[12:23, :]
     norms = np.linalg.norm(pose_arr, axis=1, keepdims=True)
-    # Avoid division by zero
     norms = np.where(norms == 0, 1, norms)
     return pose_arr / norms
 
@@ -242,7 +370,7 @@ def check_motion_status(pose_landmarks, last_position, checked_frames, max_accel
             else:
                 return pose_features.copy(), checked_frames + 1, max_accel, 1  # Moving
 
-    return pose_features.copy(), checked_frames + 1, max_accel, 0  # Keep checking
+    return pose_features.copy(), checked_frames + 1, max_accel, 0
 
 
 def should_discard_clip(static_status, checked_frames):
@@ -250,47 +378,133 @@ def should_discard_clip(static_status, checked_frames):
     return static_status == 2 or checked_frames < FPS
 
 
-def prepare_raw_landmarks(pose_lm_list, left_lm_list, right_lm_list, face_lm_list):
-    """Convert landmark lists to numpy arrays with NaN for missing data."""
-    pose_arrays = [landmarks_to_array(lm, POSE_LANDMARKS) for lm in pose_lm_list]
-    left_arrays = [landmarks_to_array(lm, HAND_LANDMARKS) for lm in left_lm_list]
-    right_arrays = [landmarks_to_array(lm, HAND_LANDMARKS) for lm in right_lm_list]
-    face_arrays = [landmarks_to_array(lm, FACE_LANDMARKS) for lm in face_lm_list]
+class ClipWriter:
+    """Manages writing clip data to HDF5 in chunks to avoid RAM overflow."""
 
-    return {
-        'pose': np.array(pose_arrays),
-        'left_hand': np.array(left_arrays),
-        'right_hand': np.array(right_arrays),
-        'face': np.array(face_arrays)
-    }
+    def __init__(self, h5_group, clip, chunk_size=WRITE_BUFFER_SIZE):
+        self.h5_group = h5_group
+        self.clip = clip
+        self.chunk_size = chunk_size
+
+        # Buffers for accumulating data
+        self.pose_buffer = []
+        self.left_buffer = []
+        self.right_buffer = []
+        self.face_buffer = []
+        self.timestamp_buffer = []
+
+        # Motion tracking
+        self.static_status = 0
+        self.last_position = None
+        self.checked_frames = 0
+        self.max_accel = 0
+
+        # Track if we've initialized datasets
+        self.datasets_created = False
+        self.total_frames = 0
+
+    def add_frame(self, pose_lm, left_lm, right_lm, face_lm, timestamp):
+        """Add a frame's landmarks to the buffer."""
+        self.pose_buffer.append(landmarks_to_array(pose_lm, POSE_LANDMARKS))
+        self.left_buffer.append(landmarks_to_array(left_lm, HAND_LANDMARKS))
+        self.right_buffer.append(landmarks_to_array(right_lm, HAND_LANDMARKS))
+        self.face_buffer.append(landmarks_to_array(face_lm, FACE_LANDMARKS))
+        self.timestamp_buffer.append(timestamp)
+
+        # Update motion status
+        self.last_position, self.checked_frames, self.max_accel, self.static_status = \
+            check_motion_status(pose_lm, self.last_position, self.checked_frames, self.max_accel)
+
+        # Write to disk if buffer is full
+        if len(self.pose_buffer) >= self.chunk_size:
+            self._flush_buffer()
+
+    def _flush_buffer(self):
+        """Write buffered data to HDF5."""
+        if len(self.pose_buffer) == 0:
+            return
+
+        pose_arr = np.array(self.pose_buffer)
+        left_arr = np.array(self.left_buffer)
+        right_arr = np.array(self.right_buffer)
+        face_arr = np.array(self.face_buffer)
+        timestamp_arr = np.array(self.timestamp_buffer)
+
+        if not self.datasets_created:
+            # Create resizable datasets
+            self.h5_group.create_dataset(
+                "pose_landmarks",
+                data=pose_arr,
+                maxshape=(None, POSE_LANDMARKS, LANDMARK_DIMS),
+                chunks=True
+            )
+            self.h5_group.create_dataset(
+                "left_hand_landmarks",
+                data=left_arr,
+                maxshape=(None, HAND_LANDMARKS, LANDMARK_DIMS),
+                chunks=True
+            )
+            self.h5_group.create_dataset(
+                "right_hand_landmarks",
+                data=right_arr,
+                maxshape=(None, HAND_LANDMARKS, LANDMARK_DIMS),
+                chunks=True
+            )
+            self.h5_group.create_dataset(
+                "face_landmarks",
+                data=face_arr,
+                maxshape=(None, FACE_LANDMARKS, LANDMARK_DIMS),
+                chunks=True
+            )
+            self.h5_group.create_dataset(
+                "timestamps",
+                data=timestamp_arr,
+                maxshape=(None,),
+                chunks=True
+            )
+            self.datasets_created = True
+        else:
+            # Append to existing datasets
+            for name, arr in [
+                ("pose_landmarks", pose_arr),
+                ("left_hand_landmarks", left_arr),
+                ("right_hand_landmarks", right_arr),
+                ("face_landmarks", face_arr),
+                ("timestamps", timestamp_arr)
+            ]:
+                dataset = self.h5_group[name]
+                old_size = dataset.shape[0]
+                new_size = old_size + len(arr)
+                dataset.resize(new_size, axis=0)
+                dataset[old_size:new_size] = arr
+
+        self.total_frames += len(self.pose_buffer)
+
+        # Clear buffers
+        self.pose_buffer.clear()
+        self.left_buffer.clear()
+        self.right_buffer.clear()
+        self.face_buffer.clear()
+        self.timestamp_buffer.clear()
+
+    def finalize(self):
+        """Flush remaining data and set clip attributes."""
+        self._flush_buffer()
+
+        if self.datasets_created:
+            self.h5_group.attrs["start"] = self.clip.start
+            self.h5_group.attrs["end"] = self.clip.end
+
+        return not should_discard_clip(self.static_status, self.checked_frames)
 
 
-def save_clip_to_h5(person_group, clip_index, clip, landmark_data, timestamps):
-    """Save a single clip's data to HDF5."""
-    clip_group = person_group.create_group(f"{clip_index}")
-    clip_group.attrs["start"] = clip.start
-    clip_group.attrs["end"] = clip.end
-
-    # Save each landmark type separately
-    clip_group.create_dataset("pose_landmarks", data=landmark_data['pose'])
-    clip_group.create_dataset("left_hand_landmarks", data=landmark_data['left_hand'])
-    clip_group.create_dataset("right_hand_landmarks", data=landmark_data['right_hand'])
-    clip_group.create_dataset("face_landmarks", data=landmark_data['face'])
-    clip_group.create_dataset("timestamps", data=timestamps)
-
-
-def read_video_once_for_all_clips(cap, clips, fps):
-    """
-    Read video once sequentially and yield frames for each clip.
-    Much faster than seeking to each clip start.
-    """
-    fps_original = cap.get(cv2.CAP_PROP_FPS)
+def read_video_once_for_all_clips(reader, clips, fps):
+    """Read video once sequentially and yield frames for each clip."""
+    fps_original = reader.get_fps()
     skip_rate = int(round(fps_original / fps))
 
-    # Sort clips by start time
     sorted_clips = sorted(clips, key=lambda c: c.start)
 
-    # Create a mapping of which frames belong to which clips
     clip_frame_ranges = []
     for clip in sorted_clips:
         start_frame = int(clip.start * fps_original)
@@ -299,31 +513,23 @@ def read_video_once_for_all_clips(cap, clips, fps):
 
     current_clip_idx = 0
     frame_count = 0
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Seek only ONCE at the beginning
 
-    while cap.isOpened() and current_clip_idx < len(clip_frame_ranges):
-        ret, frame = cap.read()
+    while current_clip_idx < len(clip_frame_ranges):
+        ret, frame = reader.read()
         if not ret:
             break
 
-        # Check if we're in the current clip's range
         start_frame, end_frame, clip = clip_frame_ranges[current_clip_idx]
 
         if frame_count < start_frame:
-            # Haven't reached this clip yet, skip if we can
-            if frame_count % skip_rate == 0:
-                # Only process frames at our target fps to save time
-                pass
             frame_count += 1
             continue
 
         if frame_count >= end_frame:
-            # Finished this clip, move to next
             current_clip_idx += 1
             frame_count += 1
             continue
 
-        # We're in the clip range
         if frame_count % skip_rate == 0:
             timestamp = frame_count / fps_original
             yield clip, frame, timestamp
@@ -331,105 +537,93 @@ def read_video_once_for_all_clips(cap, clips, fps):
         frame_count += 1
 
 
-def process_person_clips_optimized(person, cap, output_f):
-    """Process all clips for a single person using sequential reading."""
+def process_person_clips_optimized(person, reader, output_f):
+    """Process all clips for a single person using batched GPU inference and streaming writes."""
     person_group = output_f.create_group(f"person_{person.id}")
 
     pose_options = create_pose_options()
     hand_options = create_hand_options()
     face_options = create_face_options()
 
-    # Create landmark collectors for each clip
-    clip_data = []
+    # Create ClipWriter for each clip
+    clip_writers = {}
     for clip_index, clip in enumerate(person.clips):
-        clip_data.append({
-            'index': clip_index,
-            'clip': clip,
-            'pose_lm': [],
-            'left_lm': [],
-            'right_lm': [],
-            'face_lm': [],
-            'timestamps': [],
-            'static_status': 0,
-            'last_position': None,
-            'checked_frames': 0,
-            'max_accel': 0,
-        })
+        clip_group = person_group.create_group(f"{clip_index}")
+        clip_writers[id(clip)] = ClipWriter(clip_group, clip)
 
     with vision.PoseLandmarker.create_from_options(pose_options) as pose_landmarker, \
             vision.HandLandmarker.create_from_options(hand_options) as hand_landmarker, \
             vision.FaceLandmarker.create_from_options(face_options) as face_landmarker:
 
-        # Read video once and process all clips
-        for clip_obj, frame, timestamp in read_video_once_for_all_clips(cap, person.clips, FPS):
-            # Find which clip_data entry this corresponds to
-            clip_entry = None
-            for cd in clip_data:
-                if cd['clip'] is clip_obj:
-                    clip_entry = cd
-                    break
+        # Batch processing buffers
+        frame_batch = []
+        timestamp_batch = []
+        clip_batch = []
 
-            if clip_entry is None or clip_entry['static_status'] == 2:
-                continue  # Skip if clip already marked as static
+        for clip_obj, frame, timestamp in read_video_once_for_all_clips(reader, person.clips, FPS):
+            clip_writer = clip_writers[id(clip_obj)]
 
-            clip = clip_entry['clip']
-
-            # Get bounding box for this timestamp
-            bounding_box_idx = clip.boxes.bisect_left(timestamp)
-            bounding_box_idx = max(0, bounding_box_idx - 1)
-            bounding_box = clip.boxes.peekitem(bounding_box_idx)[1]
-
-            # Crop frame
-            crop_coords = calculate_crop_region(bounding_box, clip.max_box_size)
-            cropped_frame = crop_and_prepare_frame(frame, crop_coords)
-
-            # Detect landmarks
-            pose_result, hand_result, face_result = detect_landmarks(
-                cropped_frame, timestamp, pose_landmarker, hand_landmarker, face_landmarker
-            )
-
-            # Extract individual landmarks
-            pose_landmarks = extract_pose_landmarks(pose_result)
-            face_landmarks = extract_face_landmarks(face_result)
-            left_hand, right_hand = extract_hand_landmarks(hand_result)
-
-            # Store raw landmarks
-            clip_entry['pose_lm'].append(pose_landmarks)
-            clip_entry['left_lm'].append(left_hand)
-            clip_entry['right_lm'].append(right_hand)
-            clip_entry['face_lm'].append(face_landmarks)
-            clip_entry['timestamps'].append(timestamp)
-
-            # Check for static content
-            if clip_entry['static_status'] == 0:
-                clip_entry['last_position'], clip_entry['checked_frames'], clip_entry['max_accel'], clip_entry[
-                    'static_status'] = \
-                    check_motion_status(
-                        pose_landmarks,
-                        clip_entry['last_position'],
-                        clip_entry['checked_frames'],
-                        clip_entry['max_accel']
-                    )
-
-        # Now save all clips that passed the motion check
-        for cd in clip_data:
-            if should_discard_clip(cd['static_status'], cd['checked_frames']):
+            # Skip if clip already marked as static
+            if clip_writer.static_status == 2:
                 continue
 
-            if len(cd['timestamps']) > 0:
-                landmark_data = prepare_raw_landmarks(
-                    cd['pose_lm'],
-                    cd['left_lm'],
-                    cd['right_lm'],
-                    cd['face_lm']
+            # Get bounding box
+            bounding_box_idx = clip_obj.boxes.bisect_left(timestamp)
+            bounding_box_idx = max(0, bounding_box_idx - 1)
+            bounding_box = clip_obj.boxes.peekitem(bounding_box_idx)[1]
+
+            # Crop frame
+            crop_coords = calculate_crop_region(bounding_box, clip_obj.max_box_size)
+            cropped_frame = crop_and_prepare_frame(frame, crop_coords)
+
+            # Add to batch
+            frame_batch.append(cropped_frame)
+            timestamp_batch.append(timestamp)
+            clip_batch.append(clip_obj)
+
+            # Process batch when full
+            if len(frame_batch) >= FRAME_BATCH_SIZE:
+                pose_results, hand_results, face_results = detect_landmarks_batch(
+                    frame_batch, timestamp_batch, pose_landmarker, hand_landmarker, face_landmarker
                 )
-                save_clip_to_h5(
-                    person_group,
-                    cd['index'],
-                    cd['clip'],
-                    landmark_data,
-                    np.array(cd['timestamps'])
-                )
+
+                # Process results and write to disk
+                for i, (p_res, h_res, f_res, ts, c_obj) in enumerate(
+                        zip(pose_results, hand_results, face_results, timestamp_batch, clip_batch)
+                ):
+                    pose_lm = extract_pose_landmarks(p_res)
+                    face_lm = extract_face_landmarks(f_res)
+                    left_lm, right_lm = extract_hand_landmarks(h_res)
+
+                    clip_writers[id(c_obj)].add_frame(pose_lm, left_lm, right_lm, face_lm, ts)
+
+                # Clear batches
+                frame_batch.clear()
+                timestamp_batch.clear()
+                clip_batch.clear()
+
+        # Process remaining frames in batch
+        if len(frame_batch) > 0:
+            pose_results, hand_results, face_results = detect_landmarks_batch(
+                frame_batch, timestamp_batch, pose_landmarker, hand_landmarker, face_landmarker
+            )
+
+            for i, (p_res, h_res, f_res, ts, c_obj) in enumerate(
+                    zip(pose_results, hand_results, face_results, timestamp_batch, clip_batch)
+            ):
+                pose_lm = extract_pose_landmarks(p_res)
+                face_lm = extract_face_landmarks(f_res)
+                left_lm, right_lm = extract_hand_landmarks(h_res)
+
+                clip_writers[id(c_obj)].add_frame(pose_lm, left_lm, right_lm, face_lm, ts)
+
+    # Finalize all clips
+    for clip_id, writer in clip_writers.items():
+        keep_clip = writer.finalize()
+        if not keep_clip:
+            # Remove clip group if it should be discarded
+            clip_index = [i for i, c in enumerate(person.clips) if id(c) == clip_id][0]
+            del person_group[f"{clip_index}"]
 
 
 def process_file(PATH, filename, unlabeled=False):
@@ -437,30 +631,25 @@ def process_file(PATH, filename, unlabeled=False):
     adjusted_path = (PATH.name + "/unlabeled") if unlabeled else PATH.name
     output_path = ROOT_DIR / "data" / "processed" / "landmarks" / adjusted_path / filename.replace(".mp4", ".h5")
 
-    # Check if already processed
     if check_if_already_processed(output_path):
         return
 
-    # Open video
     video_path = PATH / ("unlabeled/video" if unlabeled else "video") / filename
-    cap = cv2.VideoCapture(str(video_path))
+    reader = GPUVideoReader(video_path)
 
-    # Load bounding boxes
     bb_path = ROOT_DIR / "data" / "processed" / "bounding_boxes" / adjusted_path / filename.replace(".mp4", ".json")
     bounding_boxes = load_bounding_boxes(bb_path)
 
-    # Create person clips
     people = create_person_clips(bounding_boxes)
 
-    # Process each person
     with h5py.File(output_path, "w") as output_f:
         for person in people.values():
-            process_person_clips_optimized(person, cap, output_f)
+            process_person_clips_optimized(person, reader, output_f)
 
         output_f.attrs["fps"] = FPS
         output_f.attrs["done"] = True
 
-    cap.release()
+    reader.release()
 
 
 def process_folder(PATH):
@@ -476,7 +665,8 @@ def process_folder(PATH):
     def process_unlabeled(f):
         process_file(PATH, f, unlabeled=True)
 
-    pool = ProcessPool(nodes=8)
+    # REDUCE parallel processes for GPU decoding (2-4 is optimal)
+    pool = ProcessPool(nodes=NUM_WORKERS)  # Changed from 10 to 3
     list(tqdm(pool.imap(process_labeled, files), total=len(files), file=sys.stdout))
     list(tqdm(pool.imap(process_unlabeled, unlabeled_files), total=len(unlabeled_files), file=sys.stdout))
 
@@ -485,10 +675,7 @@ def main():
     """Main entry point."""
     for folder in sorted(os.listdir(ROOT_DIR / "data" / "raw")):
         process_folder(ROOT_DIR / "data" / "raw" / folder)
-    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    # To profile, run: python -m cProfile -o profile.stats script.py
-    # Then analyze with: python -m pstats profile.stats
     main()

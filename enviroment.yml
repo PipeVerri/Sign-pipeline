@@ -11,5 +11,8 @@ dependencies:
   - pandas
   - tqdm
   - ultralytics
+  - h5py
+  - pathos
   - pip:
       - mediapipe
+      - pynvvideocodec
