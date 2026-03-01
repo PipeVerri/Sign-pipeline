@@ -1,4 +1,7 @@
 # LSA-X
+
+deno, ffmpeg
+
 Una version extendida del dataset LSA-T
 
 Los canales usados fueron:
