@@ -2,7 +2,7 @@ import cv2
 import json
 import pathlib
 
-from src.shared.utils.video import frame_reader
+from utils.shared.utils.video import frame_reader
 
 ROOT_DIR = pathlib.Path(__file__).parents[2]
 VIDEO_FILE = ROOT_DIR / "data" / "raw" / "0-AsociacionCivil" / "video" / "0-10.mp4"

@@ -24,11 +24,11 @@ with mute_stderr_fd():
 from pathlib import Path
 import cv2
 from sortedcontainers import SortedDict
-from src.utils.video import read_cap_segments
+from video import read_cap_segments
 from typing import Any
 import numpy as np
-from src.shared.lm_processing.landmarks import Landmarks, nn_parser, make_hip_centric
-from src.shared.utils.mediapipe import mp_to_arr
+from utils.shared.lm_processing.landmarks import Landmarks, nn_parser, make_hip_centric
+from utils.shared.utils.mediapipe import mp_to_arr
 import json
 import h5py
 from pathos.multiprocessing import ProcessPool

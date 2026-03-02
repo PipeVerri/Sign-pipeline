@@ -29,7 +29,7 @@ import cv2
 from sortedcontainers import SortedDict
 from typing import Any
 import numpy as np
-from src.shared.utils.mediapipe import mp_to_arr
+from utils.shared.utils.mediapipe import mp_to_arr
 import json
 import h5py
 from pathos.multiprocessing import ProcessPool

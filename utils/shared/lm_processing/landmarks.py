@@ -1,7 +1,7 @@
 import time
-from src.shared.utils.mediapipe.parse import mp_to_arr
+from utils.shared.utils.mediapipe.parse import mp_to_arr
 import numpy as np
-from src.shared.utils.ds.segment_tree import SegmentTree
+from utils.shared.utils.ds.segment_tree import SegmentTree
 from dataclasses import dataclass, field
 from typing import List, Dict
 from pathlib import Path

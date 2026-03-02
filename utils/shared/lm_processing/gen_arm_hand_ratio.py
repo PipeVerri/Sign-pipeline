@@ -2,7 +2,7 @@
 import mediapipe as mp
 import cv2
 import numpy as np
-from src.utils.mediapipe.parse import mp_to_arr
+from utils.utils.mediapipe.parse import mp_to_arr
 
 img_path = "person.jpg"
 img = cv2.imread(img_path)

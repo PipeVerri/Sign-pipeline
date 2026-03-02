@@ -1,6 +1,6 @@
 import av
 
-def frames_for_segment(path, start_s, end_s=None, sample_rate=6):
+def frames_for_segment(path, start_s=0, end_s=None, sample_rate=6):
     """
     Yield (ndarray_bgr, timestamp_s) for frames in [start_s, end_s).
     Uses container.seek to jump to a keyframe near start_s and decodes forward.
