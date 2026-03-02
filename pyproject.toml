@@ -9,5 +9,8 @@ dependencies = [
     "silero-vad",
     "faster-whisper",
     "torchcodec",
-    "python-dotenv"
+    "python-dotenv",
+    "ultralytics",
+    "mediapipe",
+    "opencv-python"
 ]
