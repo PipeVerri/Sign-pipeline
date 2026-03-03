@@ -14,5 +14,7 @@ dependencies = [
     "mediapipe",
     "opencv-python",
     "h5py",
-    "lap>=0.5.12"
+    "lap>=0.5.12",
+    "sortedcontainers",
+    "pathos"
 ]

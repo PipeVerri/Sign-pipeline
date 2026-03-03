@@ -24,7 +24,6 @@ with mute_stderr_fd():
 
 from pathlib import Path
 from sortedcontainers import SortedDict
-from typing import Any
 import numpy as np
 from utils.shared.utils.mediapipe import mp_to_arr
 import json
@@ -440,7 +439,7 @@ def process_source(source, working, config, step_config):
     labeled_videos = sorted(labeled_dir.glob("*.mp4")) if labeled_dir.exists() else []
     unlabeled_videos = sorted(unlabeled_dir.glob("*.mp4")) if unlabeled_dir.exists() else []
 
-    pool = ProcessPool(nodes=step_config["num_workers"])
+    pool = ProcessPool(nodes=os.cpu_count())
 
     if labeled_videos:
         def process_labeled(video_path):

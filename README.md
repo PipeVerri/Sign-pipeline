@@ -61,7 +61,6 @@ options:
     batch_queue: 32
 
   landmarks:
-    num_workers: 8
     model_path_pose: "models/mediapipe/pose_landmarker_heavy.task"
     model_path_hand: "models/mediapipe/hand_landmarker.task"
     model_path_face: "models/mediapipe/face_landmarker.task"

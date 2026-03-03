@@ -216,3 +216,4 @@ models/
 data.zip
 backup/
 .claude/
+uv.lock
