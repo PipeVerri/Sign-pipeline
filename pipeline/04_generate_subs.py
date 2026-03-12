@@ -2,6 +2,7 @@ from args import parse_args
 import os
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -42,7 +43,7 @@ def process_source(source):
     os.makedirs(source_dir / "labeled/subtitles", exist_ok=True)
 
     videos = [v for v in os.listdir(video_dir) if v.endswith(".mp4")]
-    for video_name in videos:
+    for video_name in tqdm(videos, desc="Generating subtitles"):
         name = video_name.split(".")[0]
         audio_path = audio_dir / f"{name}.mp3"
         vtt_path = source_dir / "labeled/subtitles" / f"{name}.vtt"

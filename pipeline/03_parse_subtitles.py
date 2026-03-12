@@ -2,6 +2,7 @@ from args import parse_args
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
+from tqdm import tqdm
 
 working, config = parse_args()
 
@@ -26,8 +27,8 @@ def vad_process_video(source_dir, video_name):
         os.rename(video_path, source_dir / "unlabeled/video" / video_name)
         os.rename(audio_path, source_dir / "unlabeled/audio" / f"{name}.mp3")
         delete_file(source_dir / "subtitles" / f"{name}.vtt")
-        return f"Moved {name} to unlabeled (no speech)"
-    return f"{name} - speech detected"
+        return (video_name, False)
+    return (video_name, True)
 
 
 def vad_filter_videos(source_dir, videos, max_workers=os.cpu_count()):
@@ -35,14 +36,27 @@ def vad_filter_videos(source_dir, videos, max_workers=os.cpu_count()):
     os.makedirs(source_dir / "unlabeled/video", exist_ok=True)
     os.makedirs(source_dir / "unlabeled/audio", exist_ok=True)
 
+    speech_count = 0
+    moved_count = 0
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(vad_process_video, source_dir, v): v for v in videos}
-        for future in as_completed(futures):
-            video = futures[future]
-            try:
-                print(future.result())
-            except Exception as e:
-                print(f"Error with {video}: {str(e)}")
+        with tqdm(total=len(videos), unit="video", desc="VAD filtering", colour="cyan", dynamic_ncols=True) as pbar:
+            for future in as_completed(futures):
+                video = futures[future]
+                try:
+                    name, has_speech = future.result()
+                    if has_speech:
+                        speech_count += 1
+                    else:
+                        moved_count += 1
+                    pbar.update(1)
+                    pbar.set_postfix(speech=speech_count, moved=moved_count)
+                except Exception as e:
+                    pbar.update(1)
+                    tqdm.write(f"Error processing {video}: {str(e)}")
+
+    print(f"VAD done: {speech_count} with speech, {moved_count} moved to unlabeled")
 
 
 def process_subtitled(source):
@@ -88,6 +102,7 @@ def process_unsubtitled(source):
 
 
 for source in config["sources"]:
+    print(f"\nProcessing {source['name']}...")
     if source.get("subs") or source.get("auto_subs"):
         # Has downloaded subs: sort labeled/unlabeled, VAD on unsubtitled if auto_subs
         process_subtitled(source)

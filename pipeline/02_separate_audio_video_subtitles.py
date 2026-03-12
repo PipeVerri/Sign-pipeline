@@ -65,4 +65,5 @@ def process_folder(path):
     print("Done!")
 
 for folder in os.listdir(working / "videos"):
+    print(f"\nProcessing {folder}...")
     process_folder(working / "videos" / folder)
