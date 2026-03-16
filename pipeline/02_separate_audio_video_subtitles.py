@@ -1,4 +1,4 @@
-from args import parse_args
+from utils.args import parse_args
 import subprocess
 import os
 from multiprocessing import Pool
@@ -57,7 +57,7 @@ def process_folder(path):
         if sub.endswith(".vtt"):
             os.rename(path / sub, subs_dir / sub)
 
-    if config["options"]["video_audio_separation"]["delete_original"]:
+    if config.options.video_audio_separation.delete_original:
         print(f"Deleting original files...")
         for f in files:
             os.remove(path / f)

@@ -1,12 +1,11 @@
 from dataclasses import dataclass, field
 from sortedcontainers import SortedDict
 
-from .config import MAX_CLIP_FRAME_SEPARATION
-
 
 class PersonResults:
-    def __init__(self, id):
+    def __init__(self, id, max_clip_frame_separation: float = 1):
         self.id = id
+        self.max_clip_frame_separation = max_clip_frame_separation
         self.clips = []
 
     @dataclass
@@ -19,7 +18,7 @@ class PersonResults:
     def add_bounding_box_frame(self, timestamp, bounding_box):
         x_size = bounding_box[2] - bounding_box[0]
         y_size = bounding_box[3] - bounding_box[1]
-        if len(self.clips) > 0 and self.clips[-1].end + MAX_CLIP_FRAME_SEPARATION > timestamp:
+        if len(self.clips) > 0 and self.clips[-1].end + self.max_clip_frame_separation > timestamp:
             self.clips[-1].boxes[timestamp] = bounding_box
             self.clips[-1].end = timestamp
             self.clips[-1].max_box_size["x"] = max(self.clips[-1].max_box_size["x"], x_size)

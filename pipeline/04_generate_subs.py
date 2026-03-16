@@ -1,4 +1,4 @@
-from args import parse_args
+from utils.args import parse_args
 import os
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
@@ -10,9 +10,9 @@ working, config = parse_args()
 
 print("Downloading Whisper model...")
 
-whisper_cfg = config["options"]["whisper"]
-model = WhisperModel(whisper_cfg["model"], device=whisper_cfg["device"])
-language = whisper_cfg["language"]
+whisper_cfg = config.options.whisper
+model = WhisperModel(whisper_cfg.model, device=whisper_cfg.device)
+language = whisper_cfg.language
 
 def format_timestamp(seconds):
     hours = int(seconds // 3600)
@@ -35,7 +35,7 @@ def transcribe(audio_path, vtt_path):
 
 
 def process_source(source):
-    source_dir = working / "videos" / source["name"]
+    source_dir = working / "videos" / source.name
     video_dir = source_dir / "video"
     audio_dir = source_dir / "audio"
 
@@ -54,7 +54,7 @@ def process_source(source):
         print(f"Done {name}")
 
 
-for source in config["sources"]:
-    if source.get("generate_subs"):
-        print(f"\nProcessing {source['name']}...")
+for source in config.sources:
+    if source.generate_subs:
+        print(f"\nProcessing {source.name}...")
         process_source(source)

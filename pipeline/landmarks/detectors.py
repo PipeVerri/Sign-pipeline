@@ -1,78 +1,66 @@
+import ctypes
+import importlib.util
 import os
-import sys
-import contextlib
-import logging
 
-os.environ['GLOG_minloglevel'] = '3'
-logging.getLogger('mediapipe').setLevel(logging.ERROR)
+import numpy as np
+
+# ---------------------------------------------------------------------------
+# Preload CUDA 12 runtime libs from nvidia pip packages before onnxruntime
+# tries to find them by soname. This resolves the mismatch between
+# onnxruntime-gpu (built for CUDA 12) and a system CUDA 13 installation.
+# The dynamic linker caches loaded sonames, so subsequent dlopen("libcublas.so.12")
+# calls from libonnxruntime_providers_cuda.so will reuse these handles.
+# ---------------------------------------------------------------------------
+def _preload_nvidia_cuda12_libs():
+    _libs = [
+        ("nvidia.cuda_runtime", "libcudart.so.12"),
+        ("nvidia.cublas",       "libcublas.so.12"),
+        ("nvidia.cublas",       "libcublasLt.so.12"),
+        ("nvidia.cufft",        "libcufft.so.11"),
+    ]
+    for pkg, lib_name in _libs:
+        spec = importlib.util.find_spec(pkg)
+        if spec and spec.origin:
+            lib_path = os.path.join(os.path.dirname(spec.origin), "lib", lib_name)
+            if os.path.exists(lib_path):
+                try:
+                    ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+_preload_nvidia_cuda12_libs()
+
+from rtmlib import Wholebody3d
+
+# COCO-WholeBody 133-keypoint index ranges
+BODY_SLICE = slice(0, 17)
+FACE_SLICE = slice(23, 91)
+LEFT_HAND_SLICE = slice(91, 112)
+RIGHT_HAND_SLICE = slice(112, 133)
 
 
-@contextlib.contextmanager
-def _mute_stderr_fd():
-    fd = sys.stderr.fileno()
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    saved = os.dup(fd)
-    try:
-        os.dup2(devnull, fd)
-        yield
-    finally:
-        os.dup2(saved, fd)
-        os.close(saved)
-        os.close(devnull)
+def create_wholebody3d(mode: str, backend: str, device: str) -> Wholebody3d:
+    return Wholebody3d(mode=mode, backend=backend, device=device)
+
+def run_pose(model: Wholebody3d, frame: np.ndarray, bbox: list) -> tuple[np.ndarray, np.ndarray]:
+    """Run pose estimation with a pre-computed bounding box, bypassing internal detection.
+
+    Returns (kpts, scores) where:
+        kpts:   (133, 3) array with absolute pixel x,y and metric z depth
+        scores: (133,)  confidence scores
+    """
+    keypoints, scores, _, keypoints_2d = model.pose_model(frame, bboxes=[bbox])
+    # keypoints_2d: (1, 133, 2) absolute pixel coords
+    # keypoints:    (1, 133, 3) where [:,:,2] is metric depth
+    kpts = np.concatenate([keypoints_2d[0], keypoints[0, :, 2:3]], axis=-1)  # (133, 3)
+    return kpts, scores[0]
 
 
-with _mute_stderr_fd():
-    import mediapipe as mp
-    from mediapipe.tasks import python
-    from mediapipe.tasks.python import vision
-
-
-def create_pose_options(model_path):
-    return vision.PoseLandmarkerOptions(
-        base_options=python.BaseOptions(
-            model_asset_path=str(model_path),
-            delegate=mp.tasks.BaseOptions.Delegate.GPU,
-        ),
-        running_mode=vision.RunningMode.VIDEO,
+def split_keypoints(kpts: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Split 133-keypoint array into body, left_hand, right_hand, face."""
+    return (
+        kpts[BODY_SLICE],       # (17, 3)
+        kpts[LEFT_HAND_SLICE],  # (21, 3)
+        kpts[RIGHT_HAND_SLICE], # (21, 3)
+        kpts[FACE_SLICE],       # (68, 3)
     )
-
-
-def create_hand_options(model_path):
-    return vision.HandLandmarkerOptions(
-        base_options=python.BaseOptions(
-            model_asset_path=str(model_path),
-            delegate=mp.tasks.BaseOptions.Delegate.GPU,
-        ),
-        running_mode=vision.RunningMode.VIDEO,
-        num_hands=2,
-    )
-
-
-def create_face_options(model_path):
-    return vision.FaceLandmarkerOptions(
-        base_options=python.BaseOptions(
-            model_asset_path=str(model_path),
-            delegate=mp.tasks.BaseOptions.Delegate.GPU,
-        ),
-        running_mode=vision.RunningMode.VIDEO,
-        num_faces=1,
-    )
-
-
-def extract_pose_landmarks(pose_result):
-    return pose_result.pose_landmarks[0] if pose_result.pose_landmarks else None
-
-
-def extract_face_landmarks(face_result):
-    return face_result.face_landmarks[0] if face_result.face_landmarks else None
-
-
-def extract_hand_landmarks(hand_result):
-    left_hand = right_hand = None
-    for idx in range(len(hand_result.hand_landmarks)):
-        if idx < len(hand_result.handedness):
-            if hand_result.handedness[idx][0].category_name == "Right":
-                right_hand = hand_result.hand_landmarks[idx]
-            else:
-                left_hand = hand_result.hand_landmarks[idx]
-    return left_hand, right_hand

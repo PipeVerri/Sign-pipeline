@@ -1,13 +1,2 @@
-FPS = 6
-MAX_CLIP_FRAME_SEPARATION = 1
-BOUNDING_BOX_PADDING = 0.2
-MIN_CLIP_DURATION = 6 * FPS
-MOVING_THRESHOLD = 0.25
-
-FRAME_BATCH_SIZE = 80
-WRITE_BUFFER_SIZE = 160
-
-POSE_LANDMARKS = 33
-HAND_LANDMARKS = 21
-FACE_LANDMARKS = 478
-LANDMARK_DIMS = 3
+# All landmark configuration has been moved to the pipeline YAML config file
+# under options.landmarks. See LSA-X/config.yaml for reference.

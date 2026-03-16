@@ -11,10 +11,14 @@ dependencies = [
     "torchcodec",
     "python-dotenv",
     "ultralytics",
-    "mediapipe",
+    "rtmlib",
     "opencv-python",
     "h5py",
     "lap>=0.5.12",
     "sortedcontainers",
-    "pathos"
+    "pathos",
+    "onnxruntime-gpu",
+    "nvidia-cublas-cu12",
+    "nvidia-cufft-cu12",
+    "nvidia-cuda-runtime-cu12",
 ]

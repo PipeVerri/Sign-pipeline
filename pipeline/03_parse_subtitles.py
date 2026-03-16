@@ -1,4 +1,4 @@
-from args import parse_args
+from utils.args import parse_args
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
@@ -60,7 +60,7 @@ def vad_filter_videos(source_dir, videos, max_workers=os.cpu_count()):
 
 
 def process_subtitled(source):
-    source_dir = working / "videos" / source["name"]
+    source_dir = working / "videos" / source.name
     os.makedirs(source_dir / "labeled/video", exist_ok=True)
     os.makedirs(source_dir / "labeled/subtitles", exist_ok=True)
     os.makedirs(source_dir / "unlabeled/video", exist_ok=True)
@@ -84,9 +84,9 @@ def process_subtitled(source):
     if not unsubtitled:
         return
 
-    if source.get("auto_subs") or source.get("generate_subs"):
+    if source.auto_subs or source.generate_subs:
         # Keep videos with speech so step 04 can transcribe them (or VAD-filter if no generate_subs)
-        print(f"Running VAD on {len(unsubtitled)} unsubtitled videos in {source['name']}...")
+        print(f"Running VAD on {len(unsubtitled)} unsubtitled videos in {source.name}...")
         vad_filter_videos(source_dir, unsubtitled)
     else:
         # Manual subs only, no generation: videos without a sub go straight to unlabeled
@@ -95,23 +95,23 @@ def process_subtitled(source):
 
 
 def process_unsubtitled(source):
-    source_dir = working / "videos" / source["name"]
+    source_dir = working / "videos" / source.name
     os.makedirs(source_dir / "unlabeled/video", exist_ok=True)
     for video in os.listdir(source_dir / "video"):
         os.rename(source_dir / "video" / video, source_dir / "unlabeled/video" / video)
 
 
-for source in config["sources"]:
-    print(f"\nProcessing {source['name']}...")
-    if source.get("subs") or source.get("auto_subs"):
+for source in config.sources:
+    print(f"\nProcessing {source.name}...")
+    if source.subs or source.auto_subs:
         # Has downloaded subs: sort labeled/unlabeled, VAD on unsubtitled if auto_subs
         process_subtitled(source)
-    elif source.get("generate_subs"):
+    elif source.generate_subs:
         # No downloaded subs but Whisper will run next: VAD-filter speechless videos only
-        source_dir = working / "videos" / source["name"]
+        source_dir = working / "videos" / source.name
         videos = [v for v in os.listdir(source_dir / "video") if v.endswith(".mp4")]
         if videos:
-            print(f"Running VAD on {len(videos)} videos in {source['name']}...")
+            print(f"Running VAD on {len(videos)} videos in {source.name}...")
             vad_filter_videos(source_dir, videos)
     else:
         process_unsubtitled(source)

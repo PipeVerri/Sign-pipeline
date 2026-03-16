@@ -7,9 +7,8 @@ import queue
 from utils.video import frames_for_segment
 from tqdm import tqdm
 
-default_config = { "batch_size": 32, "batch_queue": 32 }
 working, config = parse_args()
-step_config = config["options"]["bounding_boxes"] | default_config
+step_config = config.options.bounding_boxes
 
 def process_folder(source_path):
     def process_video(video_path):
@@ -17,8 +16,8 @@ def process_folder(source_path):
         os.makedirs(output_dir, exist_ok=True)
 
         # Create a YOLO model
-        model = YOLO(working / step_config["model_path"])
-        batch_queue = queue.Queue(maxsize=step_config["batch_queue"])
+        model = YOLO(working / step_config.model_path)
+        batch_queue = queue.Queue(maxsize=step_config.batch_queue)
 
         def producer():
             current_batch_frames = []
@@ -26,7 +25,7 @@ def process_folder(source_path):
             for frame, timestamp in frames_for_segment(video_path):
                 current_batch_frames.append(frame)
                 current_batch_ts.append(timestamp)
-                if len(current_batch_frames) == step_config["batch_size"]:
+                if len(current_batch_frames) == step_config.batch_size:
                     batch_queue.put((current_batch_frames, current_batch_ts))
                     current_batch_frames = []
                     current_batch_ts = []
@@ -70,5 +69,5 @@ def process_source(source_name):
     process_folder(working / "videos" / source_name / "labeled/video")
     process_folder(working / "videos" / source_name / "unlabeled/video")
 
-for source in config["sources"]:
-    process_source(source["name"])
+for source in config.sources:
+    process_source(source.name)

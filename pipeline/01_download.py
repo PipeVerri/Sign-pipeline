@@ -3,26 +3,26 @@ import os
 import yt_dlp
 from tqdm import tqdm
 working, config = parse_args()
-for source in config["sources"]:
-    os.makedirs(working / "videos" / source["name"], exist_ok=True)
+for source in config.sources:
+    os.makedirs(working / "videos" / source.name, exist_ok=True)
     # Get total video count before downloading
-    print(f"\nFetching video list for: {source['name']}...")
+    print(f"\nFetching video list for: {source.name}...")
 
     flat_opts = {"quiet": True, "extract_flat": True, "ignoreerrors": True}
-    browser = config["options"]["download"].get("cookies_from_browser")
+    browser = config.options.download.cookies_from_browser
     if browser is not None:
         flat_opts["cookies_from_browser"] = (browser, None, None, None)
 
     total = 0
-    if source.get("url"):
-        urls = source["url"]
+    if source.url:
+        urls = source.url
         with yt_dlp.YoutubeDL(flat_opts) as ydl:
-            info = ydl.extract_info(source["url"], download=False)
+            info = ydl.extract_info(source.url, download=False)
             if info:
                 entries = info.get("entries")
                 total += len(list(entries) if entries else 1)
     else:
-        with open(working / source["path"], "r") as f:
+        with open(working / source.path, "r") as f:
             urls = f.read().split("\n")
             total += len(urls)
     
@@ -49,12 +49,12 @@ for source in config["sources"]:
             pbar.update(1)
             pbar.set_postfix_str(title[:50])
     ydl_opts = {
-        "format": config["options"]["download"]["format"],
+        "format": config.options.download.format,
         "merge_output_format": "mp4",
-        "subtitleslangs": config["options"]["download"]["sub_langs"],
-        "outtmpl": str(working / "videos" / source["name"] / "%(id)s.%(ext)s"),
+        "subtitleslangs": config.options.download.sub_langs,
+        "outtmpl": str(working / "videos" / source.name / "%(id)s.%(ext)s"),
         "writesubtitles": True,
-        "writeautomaticsub": source["auto_subs"],
+        "writeautomaticsub": source.auto_subs,
         "remote_components": ["ejs:github"],
         "download_archive": str(archive_path),
         "postprocessor_hooks": [postprocessor_hook],
@@ -67,4 +67,4 @@ for source in config["sources"]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download(urls)
     pbar.close()
-    print(f"{source['name']}: {state['completed']} downloaded, {already_done} already existed, {total} total\n")
+    print(f"{source.name}: {state['completed']} downloaded, {already_done} already existed, {total} total\n")

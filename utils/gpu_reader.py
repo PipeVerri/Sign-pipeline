@@ -31,9 +31,9 @@ class GPUVideoReader:
     def _init_gpu_decoder(self):
         cmd = [
             "ffmpeg", "-nostdin", "-loglevel", "error",
-            "-hwaccel", "cuda",
             "-i", self.video_path,
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-vcodec", "rawvideo", "-",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-vcodec", "rawvideo", "-"
+            #"-hwaccel", "cuda",
         ]
         try:
             self.proc = subprocess.Popen(

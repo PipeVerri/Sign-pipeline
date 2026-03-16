@@ -1,6 +1,6 @@
 # Sign Language Data Pipeline
 
-A pipeline for building large-scale sign language datasets from YouTube videos. It downloads videos, separates labeled (subtitled) from unlabeled footage, generates subtitles where missing, tracks people with YOLO, and extracts body/hand/face landmarks with MediaPipe.
+A pipeline for building large-scale sign language datasets from YouTube videos. It downloads videos, separates labeled (subtitled) from unlabeled footage, generates subtitles where missing, tracks people with YOLO, and extracts body/hand/face landmarks with **rtmlib Wholebody3d** (RTMW3D-x).
 
 ---
 
@@ -8,19 +8,22 @@ A pipeline for building large-scale sign language datasets from YouTube videos. 
 
 - Python 3.12
 - `ffmpeg` on PATH (with CUDA support for GPU-accelerated video decoding in step 06)
-- NVIDIA GPU recommended (MediaPipe GPU delegate + ffmpeg NVDEC in step 06)
-- Model files (see [Models](#models))
+- NVIDIA GPU recommended (rtmlib CUDA via onnxruntime-gpu in step 06)
 
 Install dependencies:
 ```bash
 uv sync
 ```
 
+> **Note — CUDA version mismatch**: `onnxruntime-gpu` is built against CUDA 12. If your system has CUDA 13+, the `nvidia-cublas-cu12`, `nvidia-cufft-cu12`, and `nvidia-cuda-runtime-cu12` packages (included in `pyproject.toml`) provide the required CUDA 12 runtime libs. They are preloaded automatically at import time — no manual setup needed.
+
 ---
 
 ## Config file
 
 Every step reads the same YAML config. Pass it with `--config path/to/config.yaml`. The working directory defaults to `./working` and can be overridden with `--workdir`.
+
+Config is parsed into typed dataclasses in `utils/config.py`. **All defaults live there** — any key omitted from the YAML falls back to its default value.
 
 ```yaml
 sources:
@@ -45,26 +48,33 @@ sources:
 options:
   download:
     format: "bestvideo[height<=720]+bestaudio/best[height<=720]"
-    sub_langs: ["es"]
+    sub_langs: ["es.*"]
+    cookies_from_browser: "firefox"   # optional
 
   video_audio_separation:
-    delete_original: true   # delete the merged mp4 after splitting
+    delete_original: false
 
   whisper:
-    model: "large-v3"
+    model: "large-v3-turbo"
     device: "cuda"
     language: "es"
 
   bounding_boxes:
-    model_path: "models/yolo/yolo11x.pt"  # relative to --workdir
+    model_path: "models/yolo11m.pt"   # relative to --workdir
+    fps: 6
     batch_size: 32
     batch_queue: 32
 
   landmarks:
-    model_path_pose: "models/mediapipe/pose_landmarker_heavy.task"
-    model_path_hand: "models/mediapipe/hand_landmarker.task"
-    model_path_face: "models/mediapipe/face_landmarker.task"
-    frame_batch_size: 80   # optional, default 80
+    fps: 6
+    num_workers: 1
+    max_clip_frame_separation: 1      # seconds; gap before a new clip is started
+    min_clip_duration_frames: 36      # clips shorter than this are discarded (fps * 6s)
+    moving_threshold: 0.25            # clips with less motion than this are discarded
+    write_buffer_size: 160            # frames buffered before flushing to H5
+    mode: "balanced"                  # rtmlib model size: balanced | performance | lightweight
+    backend: "onnxruntime"            # onnxruntime | opencv | openvino | tensorrt
+    device: "cuda"
 ```
 
 ### Source flags
@@ -78,30 +88,17 @@ options:
 
 ---
 
-## Models
-
-| Step | File | Location |
-|------|------|----------|
-| 05 | YOLO tracking model (e.g. `yolo11x.pt`) | `{workdir}/models/yolo/` |
-| 06 | `pose_landmarker_heavy.task` | `{project_root}/models/mediapipe/` |
-| 06 | `hand_landmarker.task` | `{project_root}/models/mediapipe/` |
-| 06 | `face_landmarker.task` | `{project_root}/models/mediapipe/` |
-
-MediaPipe models can be downloaded from the [MediaPipe Models page](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker#models).
-
----
-
 ## Running the pipeline
 
 Run each step in order from the project root:
 
 ```bash
-python pipeline/01_download.py                --config config.yaml
+python pipeline/01_download.py                       --config config.yaml
 python pipeline/02_separate_audio_video_subtitles.py --config config.yaml
-python pipeline/03_parse_subtitles.py         --config config.yaml
-python pipeline/04_generate_subs.py           --config config.yaml  # only if generate_subs sources exist
-python pipeline/05_generate_bounding_boxes.py --config config.yaml
-python pipeline/06_generate_landmarks.py      --config config.yaml
+python pipeline/03_parse_subtitles.py                --config config.yaml
+python pipeline/04_generate_subs.py                  --config config.yaml  # only if generate_subs sources exist
+python pipeline/05_generate_bounding_boxes.py        --config config.yaml
+python pipeline/06_generate_landmarks.py             --config config.yaml
 ```
 
 Skip step 04 entirely if no source has `generate_subs: true`.
@@ -125,15 +122,7 @@ Splits each downloaded `.mp4` into:
 - `audio/` — mono 16 kHz MP3
 - `subtitles/` — moves `.vtt` files here
 
-Runs in parallel across all CPU cores. Optionally deletes the original merged file.
-
-Output structure per source:
-```
-working/videos/{source}/
-  video/
-  audio/
-  subtitles/
-```
+Runs in parallel across all CPU cores. Optionally deletes the original merged file (`delete_original`).
 
 ---
 
@@ -144,18 +133,6 @@ Decides whether each video is **labeled** (has a subtitle) or **unlabeled** (no 
 - **Sources with `subs` or `auto_subs`**: any video whose stem matches a `.vtt` in `subtitles/` is labeled; the rest are VAD-filtered (silero-VAD) and moved to `unlabeled/video/` if no speech is found.
 - **Sources with `generate_subs`**: VAD-filters all videos; silent videos go to `unlabeled/video/`; the rest remain in `video/` for step 04.
 - **Sources with none of the above**: everything goes to `unlabeled/video/`.
-
-Output structure per source:
-```
-working/videos/{source}/
-  labeled/
-    video/
-    audio/
-    subtitles/
-  unlabeled/
-    video/
-    audio/
-```
 
 ---
 
@@ -190,13 +167,14 @@ Track IDs are floats serialized as string keys after the JSON round-trip.
 
 The main feature-extraction step. For each video it:
 
-1. Loads the bounding box JSON from step 05 and groups detections into per-person clips (a new clip starts whenever a track disappears for more than `MAX_CLIP_FRAME_SEPARATION = 1` s).
+1. Loads the bounding box JSON from step 05 and groups detections into per-person clips (a new clip starts whenever a track disappears for more than `max_clip_frame_separation` seconds).
 2. Reads the VTT subtitle file if labeled.
 3. Reads the video once per person in a single sequential pass (`GPUVideoReader` via `ffmpeg -hwaccel cuda`, falling back to PyAV).
-4. Crops each frame to the person's bounding box (padded by 20 %) and runs **MediaPipe GPU-delegate** pose, hand, and face landmarkers.
-5. Discards static clips (arm vectors change less than `MOVING_THRESHOLD = 0.25` over the first `MIN_CLIP_DURATION = 36` frames) and clips shorter than 1 second.
-6. Writes raw landmarks to a per-video temp H5 file in chunks (`WRITE_BUFFER_SIZE = 160` frames).
-7. After all videos are processed, merges temp files into two source-level H5 files.
+4. For each frame, passes the **full frame + pre-computed bounding box** from step 05 directly to the **rtmlib Wholebody3d pose model**, bypassing rtmlib's internal person detector.
+5. Extracts 133 COCO-WholeBody keypoints (body 17, face 68, left hand 21, right hand 21) with absolute pixel coordinates and metric depth (z).
+6. Discards static clips (torso vectors change less than `moving_threshold` over the first `min_clip_duration_frames` frames) and clips shorter than 1 second.
+7. Writes landmarks to a per-video temp H5 file in chunks of `write_buffer_size` frames.
+8. After all videos are processed, merges temp files into two source-level H5 files.
 
 Parallelized across videos with `pathos.ProcessPool(nodes=num_workers)`.
 
@@ -218,16 +196,26 @@ working/processed/landmarks/{source}_unlabeled.h5
     ├── .attrs["subtitles"]  = str   (full VTT content; "" for unlabeled)
     └── person_{track_id}/
         └── {clip_index}/
-            ├── .attrs["start"]           float  (seconds)
-            ├── .attrs["end"]             float  (seconds)
-            ├── pose_landmarks            (N, 33,  3)  float64  — NaN where not detected
-            ├── left_hand_landmarks       (N, 21,  3)  float64
-            ├── right_hand_landmarks      (N, 21,  3)  float64
-            ├── face_landmarks            (N, 478, 3)  float64
-            └── timestamps                (N,)         float64  (seconds)
+            ├── .attrs["start"]             float  (seconds)
+            ├── .attrs["end"]               float  (seconds)
+            ├── body_landmarks              (N, 17, 3)  float64  — COCO 17 body keypoints
+            ├── left_hand_landmarks         (N, 21, 3)  float64
+            ├── right_hand_landmarks        (N, 21, 3)  float64
+            ├── face_landmarks              (N, 68, 3)  float64
+            └── timestamps                  (N,)        float64  (seconds)
 ```
 
-Coordinates are normalized MediaPipe values (x, y in \[0, 1\] relative to the cropped frame; z is depth).
+Coordinates are in **absolute pixel space** (x, y in pixels of the original frame; z is metric depth in meters from rtmlib).
+
+#### Keypoint layout (COCO-WholeBody, 133 total)
+
+| Dataset | Indices | Count | Description |
+|---------|---------|-------|-------------|
+| `body_landmarks` | 0–16 | 17 | COCO body skeleton |
+| *(feet, not stored)* | 17–22 | 6 | — |
+| `face_landmarks` | 23–90 | 68 | Face mesh |
+| `left_hand_landmarks` | 91–111 | 21 | Left hand |
+| `right_hand_landmarks` | 112–132 | 21 | Right hand |
 
 ---
 
