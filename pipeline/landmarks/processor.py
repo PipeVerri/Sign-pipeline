@@ -12,37 +12,6 @@ from .clip_writer import ClipWriter
 
 
 # ---------------------------------------------------------------------------
-# Per-person clip processing
-# ---------------------------------------------------------------------------
-
-def process_person_clips(person, video_path, person_group, wholebody, cfg: LandmarksConfig):
-    print(f"Processing {person.id}...")
-    fps = cfg.fps
-
-    clip_writers = {}
-    for clip_index, clip in enumerate(person.clips):
-        grp = person_group.create_group(f"{clip_index}")
-        clip_writers[id(clip)] = (clip_index, ClipWriter(grp, clip, cfg))
-
-    for clip_obj, frame, ts in read_video_for_clips(video_path, person.clips, fps):
-        _, writer = clip_writers[id(clip_obj)]
-        if writer.static_status == 2:
-            continue
-
-        bb_idx = max(0, clip_obj.boxes.bisect_left(ts) - 1)
-        bbox = clip_obj.boxes.peekitem(bb_idx)[1]  # [x1, y1, x2, y2]
-
-        kpts, scores = run_pose(wholebody, frame, bbox)
-        body, left_hand, right_hand, face = split_keypoints(kpts)
-
-        writer.add_frame(body, left_hand, right_hand, face, ts)
-
-    for clip_id, (clip_index, writer) in clip_writers.items():
-        if not writer.finalize():
-            del person_group[f"{clip_index}"]
-
-
-# ---------------------------------------------------------------------------
 # Per-video processing
 # ---------------------------------------------------------------------------
 
@@ -89,9 +58,41 @@ def process_video(video_path, is_labeled, working, cfg: LandmarksConfig):
         video_group.attrs["labeled"] = is_labeled
         video_group.attrs["subtitles"] = subtitles
 
-        for person in people.values():
-            person_group = video_group.create_group(f"person_{person.id}")
-            process_person_clips(person, video_path, person_group, wholebody, cfg)
+        # Gather all clips from all people
+        all_clips = []
+        clip_to_info = {} # clip_id -> (person_group, clip_index, ClipWriter)
+        
+        for person_id, person in people.items():
+            person_group = video_group.create_group(f"person_{person_id}")
+            for clip_index, clip in enumerate(person.clips):
+                grp = person_group.create_group(f"{clip_index}")
+                writer = ClipWriter(grp, clip, cfg)
+                all_clips.append(clip)
+                clip_to_info[id(clip)] = (person_group, clip_index, writer)
+
+        if all_clips:
+            print(f"[{video_path.stem}] Processing {len(people)} people, {len(all_clips)} clips...")
+            # Process all clips in a single pass over the video
+            for clip_obj, frame, ts in read_video_for_clips(video_path, all_clips, cfg.fps):
+                person_group, clip_index, writer = clip_to_info[id(clip_obj)]
+                
+                # Skip if already marked as static (though in a single pass we might still 
+                # be yielding frames for other clips in the same frame)
+                if writer.static_status == 2:
+                    continue
+
+                bb_idx = max(0, clip_obj.boxes.bisect_left(ts) - 1)
+                bbox = clip_obj.boxes.peekitem(bb_idx)[1]  # [x1, y1, x2, y2]
+
+                kpts, scores = run_pose(wholebody, frame, bbox)
+                body, left_hand, right_hand, face = split_keypoints(kpts)
+
+                writer.add_frame(body, left_hand, right_hand, face, ts)
+
+        # Finalize all writers and remove discarded clips
+        for clip_id, (person_group, clip_index, writer) in clip_to_info.items():
+            if not writer.finalize():
+                del person_group[f"{clip_index}"]
 
         output_f.attrs["fps"] = cfg.fps
         output_f.attrs["done"] = True

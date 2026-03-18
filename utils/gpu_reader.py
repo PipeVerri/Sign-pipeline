@@ -14,6 +14,7 @@ class GPUVideoReader:
         self.video_path = str(video_path)
         self.current_frame = 0
         self._probe_properties()
+        self.use_gpu_requested = use_gpu
         if use_gpu:
             self._init_gpu_decoder()
         else:
@@ -28,12 +29,14 @@ class GPUVideoReader:
         self.height = stream.height
         container.close()
 
-    def _init_gpu_decoder(self):
+    def _init_gpu_decoder(self, start_frame=0):
+        start_time = start_frame / self.fps
         cmd = [
             "ffmpeg", "-nostdin", "-loglevel", "error",
+            "-ss", f"{start_time:.3f}",
             "-i", self.video_path,
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-vcodec", "rawvideo", "-"
-            #"-hwaccel", "cuda",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-vcodec", "rawvideo", "-",
+            "-hwaccel", "cuda",
         ]
         try:
             self.proc = subprocess.Popen(
@@ -41,15 +44,34 @@ class GPUVideoReader:
             )
             self._ff_frame_bytes = self.width * self.height * 3
             self.use_gpu = True
+            self.current_frame = start_frame
         except Exception:
             self._init_pav_decoder()
 
-    def _init_pav_decoder(self):
+    def _init_pav_decoder(self, start_frame=0):
         self.use_gpu = False
         self.container = av.open(self.video_path)
         stream = self.container.streams.video[0]
         stream.thread_type = "AUTO"
+        
+        if start_frame > 0:
+            target_ts = int(start_frame * av.time_base / self.fps)
+            self.container.seek(target_ts, stream=stream)
+        
         self._frame_iter = self.container.decode(stream)
+        self.current_frame = start_frame
+
+    def seek(self, frame_index):
+        """Seek to a specific frame index."""
+        if frame_index == self.current_frame:
+            return
+            
+        if self.use_gpu:
+            self.release()
+            self._init_gpu_decoder(start_frame=frame_index)
+        else:
+            self.release()
+            self._init_pav_decoder(start_frame=frame_index)
 
     def read(self):
         if self.use_gpu:
@@ -78,53 +100,69 @@ class GPUVideoReader:
                 self.proc.stderr.close()
             except Exception:
                 pass
+            self.proc = None
         if getattr(self, "container", None):
             try:
                 self.container.close()
             except Exception:
                 pass
+            self.container = None
 
 
-def read_video_for_clips(path, clips, sample_rate=6, use_gpu=True):
+def read_video_for_clips(path, clips, sample_rate=6, use_gpu=True, seek_threshold=30):
     """Open a video and yield (clip, frame_rgb, timestamp_s) for every sampled
     frame across all clips in a single sequential pass.
-
-    A fresh reader is created per call so each call starts from frame 0.
-    Clips are processed in temporal order; frames between clips are discarded.
+    
+    If multiple clips overlap at the same frame, it yields (clip, frame, ts)
+    once for each clip to maintain compatibility with existing loops.
     """
     reader = GPUVideoReader(path, use_gpu=use_gpu)
     fps_original = reader.get_fps()
     skip_rate = max(1, int(round(fps_original / sample_rate)))
 
-    sorted_clips = sorted(clips, key=lambda c: c.start)
-    clip_frame_ranges = [
+    # Each clip is (start_frame, end_frame, clip_object)
+    clip_ranges = sorted([
         (int(c.start * fps_original), int(c.end * fps_original), c)
-        for c in sorted_clips
-    ]
-
-    current_clip_idx = 0
-    frame_count = 0
+        for c in clips
+    ], key=lambda x: x[0])
 
     try:
-        while current_clip_idx < len(clip_frame_ranges):
+        current_frame = 0
+        while clip_ranges:
+            # Find the next frame that belongs to any clip
+            next_start = clip_ranges[0][0]
+            
+            # If we are far from the next start, seek
+            if next_start - current_frame > seek_threshold:
+                reader.seek(next_start)
+                current_frame = next_start
+
+            # Read frame
             ret, frame = reader.read()
             if not ret:
                 break
-
-            start_frame, end_frame, clip = clip_frame_ranges[current_clip_idx]
-
-            if frame_count < start_frame:
-                frame_count += 1
-                continue
-
-            if frame_count >= end_frame:
-                current_clip_idx += 1
-                frame_count += 1
-                continue
-
-            if frame_count % skip_rate == 0:
-                yield clip, frame, frame_count / fps_original
-
-            frame_count += 1
+            
+            ts = current_frame / fps_original
+            
+            # Check which clips this frame belongs to
+            # Since clips are sorted by start, and we might have overlapping clips,
+            # we check all clips that could contain this frame.
+            active_clips_indices = []
+            for i, (start, end, clip) in enumerate(clip_ranges):
+                if current_frame >= start and current_frame < end:
+                    if current_frame % skip_rate == 0:
+                        yield clip, frame, ts
+                elif current_frame >= end:
+                    active_clips_indices.append(i)
+                elif current_frame < start:
+                    # Since sorted by start, no more clips will match this frame
+                    break
+            
+            # Remove clips that have ended
+            for i in reversed(active_clips_indices):
+                clip_ranges.pop(i)
+                
+            current_frame += 1
+            
     finally:
         reader.release()

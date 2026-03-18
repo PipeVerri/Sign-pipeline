@@ -29,6 +29,8 @@ def process_source(source, working, cfg):
     temp_dir = working / "processed" / "landmarks" / "tmp" / source_name
     output_dir = working / "processed" / "landmarks"
 
+    print(labeled_dir.exists())
+
     os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -57,6 +59,7 @@ def process_source(source, working, cfg):
 
     pool.close()
     pool.join()
+    pool.clear()
 
 
 if __name__ == "__main__":
