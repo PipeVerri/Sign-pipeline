@@ -243,3 +243,14 @@ working/
         ├── {source}_labeled.h5
         └── {source}_unlabeled.h5
 ```
+
+---
+
+## Dataset Statistics
+
+You can calculate the current dataset statistics (number of videos and total duration) using the exploration script:
+
+```bash
+python utils/exploration/calculate_video_hours.py --config config.yaml
+```
+
